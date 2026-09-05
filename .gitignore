@@ -1,0 +1,4 @@
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.claude/.last-audit.json
+.opencode
