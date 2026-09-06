@@ -1,0 +1,16 @@
+{
+  "_synthetic": true,
+  "_note": "Synthetic RuntimeFacts: binding only, no D3 facts collected yet. Hand-written expected conclusion: validate_runtime_facts returns INCOMPLETE with every fact condition PENDING/missing_fact and no VIOLATED condition.",
+  "facts_schema_version": 1,
+  "binding": {
+    "run_id": "run-fixture-1",
+    "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+    "attempt_id": "attempt-fixture-1",
+    "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+    "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1"
+  },
+  "observed_environment": null,
+  "name_map": null,
+  "a": null,
+  "b": null
+}

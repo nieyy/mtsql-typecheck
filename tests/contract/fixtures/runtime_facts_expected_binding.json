@@ -1,0 +1,9 @@
+{
+  "_synthetic": true,
+  "_note": "Synthetic expected binding hand-written for the runtime-facts fixtures; not produced by a real database run. case_id = case_id of payload_signed_widen_q1.json. environment_hash = sha256 of the canonical JSON of the ObservedEnvironment in runtime_facts_ready.json; name_map_hash = sha256 of the canonical JSON of the NameMap below.",
+  "run_id": "run-fixture-1",
+  "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+  "attempt_id": "attempt-fixture-1",
+  "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+  "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1"
+}

@@ -1,0 +1,102 @@
+{
+  "_synthetic": true,
+  "_note": "Synthetic RuntimeFacts identical to runtime_facts_ready.json except that side A read back rid 3 (a NULL row) as integer 0. Hand-written expected conclusion: validate_runtime_facts returns BLOCKED with condition a_readback VIOLATED/load_value_mismatch (NULL must stay NULL; NULL becoming zero is a load value mismatch).",
+  "facts_schema_version": 1,
+  "binding": {
+    "run_id": "run-fixture-1",
+    "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+    "attempt_id": "attempt-fixture-1",
+    "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+    "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1"
+  },
+  "observed_environment": {
+    "instance_identity": "mysql-8039-local",
+    "version": "8.0.39",
+    "vendor": "mysql",
+    "build_id": "20250715",
+    "engine": "innodb",
+    "sql_mode_tokens": ["NO_ENGINE_SUBSTITUTION", "ONLY_FULL_GROUP_BY", "STRICT_ALL_TABLES"],
+    "character_set": "utf8mb4",
+    "collation": "utf8mb4_bin",
+    "time_zone": "+00:00",
+    "optimizer_switch": "index_merge=on,mrr=off"
+  },
+  "name_map": {
+    "database_a": "tc_a",
+    "database_b": "tc_b",
+    "table_a": "t_a",
+    "table_b": "t_b"
+  },
+  "a": {
+    "statement_receipts": [
+      {
+        "phase": "ddl",
+        "ordinal": 0,
+        "sql_hash": "d76d1831c1548cbfdb13078da850c54b263d14f3e166e67c625ca22ef7c879fd",
+        "success": true,
+        "diagnostics_complete": true
+      },
+      {
+        "phase": "insert",
+        "ordinal": 0,
+        "sql_hash": "07379d99f821a4a08e4059216a54b4b41c43e16adb910c7cea25e2f808b9a947",
+        "success": true,
+        "diagnostics_complete": true
+      }
+    ],
+    "readback": [
+      [1, {"kind": "integer", "value": "-128"}],
+      [2, {"kind": "integer", "value": "0"}],
+      [3, {"kind": "integer", "value": "0"}],
+      [4, {"kind": "integer", "value": "127"}]
+    ],
+    "readback_complete": true,
+    "actual_schema": {
+      "logical_id": "t0",
+      "columns": [
+        {"name": "rid", "type": {"kind": "signed_integer", "name": "BIGINT"}, "nullable": false},
+        {"name": "v", "type": {"kind": "signed_integer", "name": "TINYINT"}, "nullable": true}
+      ],
+      "primary_key": ["rid"],
+      "index_variant": "none"
+    },
+    "load_committed": true,
+    "isolation_confirmed": true
+  },
+  "b": {
+    "statement_receipts": [
+      {
+        "phase": "ddl",
+        "ordinal": 0,
+        "sql_hash": "1415271c57bdd7c18d5f80dad0f178bf0f67fc688feda93d1751a9065235679d",
+        "success": true,
+        "diagnostics_complete": true
+      },
+      {
+        "phase": "insert",
+        "ordinal": 0,
+        "sql_hash": "9219f8b72f111e154ac39b42354dce78e81816ca3651f55e8390b7b8d1c99ddd",
+        "success": true,
+        "diagnostics_complete": true
+      }
+    ],
+    "readback": [
+      [1, {"kind": "integer", "value": "-128"}],
+      [2, {"kind": "integer", "value": "0"}],
+      [3, {"kind": "null"}],
+      [4, {"kind": "integer", "value": "127"}]
+    ],
+    "readback_complete": true,
+    "actual_schema": {
+      "logical_id": "t0",
+      "columns": [
+        {"name": "rid", "type": {"kind": "signed_integer", "name": "BIGINT"}, "nullable": false},
+        {"name": "v", "type": {"kind": "signed_integer", "name": "SMALLINT"}, "nullable": true}
+      ],
+      "primary_key": ["rid"],
+      "index_variant": "none"
+    },
+    "load_committed": true,
+    "isolation_confirmed": true
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "case_schema_version": 1,
+  "rule": {"rule_id": "mysql80.signed-widen", "rule_version": 1},
+  "a_type": {"kind": "signed_integer", "name": "TINYINT"},
+  "b_type": {"kind": "signed_integer", "name": "SMALLINT"},
+  "table": {
+    "logical_id": "t0",
+    "columns": [
+      {"name": "rid", "type": {"kind": "signed_integer", "name": "BIGINT"}, "nullable": false},
+      {"name": "v", "type": {"kind": "signed_integer", "name": "TINYINT"}, "nullable": true}
+    ],
+    "primary_key": ["rid"],
+    "index_variant": "none"
+  },
+  "rows": [
+    [1, {"kind": "integer", "value": "-0"}],
+    [2, {"kind": "integer", "value": "0"}]
+  ],
+  "query": {
+    "template_id": "Q1",
+    "projections": [{"alias": "c0", "expr": {"kind": "column_ref", "column": "v"}}]
+  },
+  "relation": {
+    "mode": "multiset_exact",
+    "columns": [
+      {
+        "alias": "c0",
+        "a_family": "signed_integer",
+        "b_family": "signed_integer",
+        "value_equivalence": "exact_numeric",
+        "null_policy": "preserve"
+      }
+    ]
+  },
+  "environment": {
+    "database": "mysql80",
+    "engine": "innodb",
+    "scope": "same-instance",
+    "sql_mode_tokens": ["NO_ENGINE_SUBSTITUTION", "ONLY_FULL_GROUP_BY", "STRICT_ALL_TABLES"],
+    "character_set": "utf8mb4",
+    "collation": "utf8mb4_bin",
+    "time_zone": "+00:00"
+  },
+  "generator": {"id": "g1", "version": "1"},
+  "renderer": {"id": "r1", "version": "1"}
+}
