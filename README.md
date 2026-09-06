@@ -5,8 +5,14 @@ through compatible schema and data transformations.
 
 > Status: the D1 offline generation and validation core is implemented
 > (deterministic case generation, bundle writing, and the offline CLI below).
-> No database connection, execution, comparison, or reduction capability
-> exists yet (D2-D4 are not implemented).
+> The D2 offline result-comparison and counterexample-reduction core is also
+> implemented (typed exact multiset comparison gates, bounded 3-attempt
+> replay, deterministic complexity-guided reduction, and an append-only
+> trace) as importable Python protocol modules operating on execution
+> evidence models. No database connection or execution capability exists
+> yet (D3/D4 are not implemented): replay and reduction run only against a
+> caller-provided `ExecutionPort` and are exercised in tests through
+> hand-written fakes, never against a real database.
 
 ## Motivation
 
@@ -96,14 +102,51 @@ part of the profile hash.
 
 Scope: this is the D1 offline capability only. It does not include database
 connection or execution, a result comparator, or counterexample reduction
-(D2/D3 designs are not implemented). Successful generation or offline
+(D3/D4 designs are not implemented). Successful generation or offline
 validation is not database certification of any kind.
+
+### Implemented: D2 offline comparison and reduction protocol (library)
+
+The `mtsql_typecheck.oracle` and `mtsql_typecheck.reduction` packages provide
+the D2 capability as a Python library, with no CLI yet and no database
+access of any kind:
+
+- `oracle.exact` — canonical value keys and full exact multiset comparison
+  (integer arithmetic only; NULL never equals 0; duplicate rows preserved;
+  bounded witness output).
+- `oracle.gates` — `compare_case`, the ordered evidence gate pipeline that
+  turns one execution-evidence bundle into a MATCH, a MISMATCH_CANDIDATE
+  (with exact signature, fingerprint, and witness), or an explicit
+  INCONCLUSIVE outcome with stable reason codes. Timeouts, SQL errors,
+  truncated results, and missing evidence never become successful matches.
+- `reduction.replay` — `replay_candidate`, a bounded 3-attempt replay group
+  (AB, BA, AB) that re-comparisons the original observation and only labels
+  it REPRODUCED when all three attempts agree on signature, fingerprint,
+  environment, and terminal state.
+- `reduction.strategy` — the deterministic reduction proposal order
+  (remove rows, simplify predicates, replace values and literals) and the
+  strictly decreasing complexity metric that guides the search.
+- `reduction.engine` — `reduce_candidate`, the bounded reduction loop that
+  re-verifies every child through a fresh replay group before accepting it
+  and preserves the last verified best across budget exhaustion,
+  cancellation, and faults.
+- `reduction.trace` — an append-only, hash-chained JSONL trace with
+  atomically published payload files and a read-only audit (PARTIAL/CORRUPT
+  handling; the last verified ACCEPTED record is the only persistent best
+  authority).
+
+All comparison and reduction state is kept independent of database
+connections: execution facts enter through the `ExecutionPort` protocol and
+evidence models in `mtsql_typecheck.contracts`. A mismatch candidate is
+never a confirmed bug, and reduced candidates are revalidated from scratch
+in fresh test objects.
 
 ## Design
 
 The authoritative design is maintained in the `mtsql_helper` repository:
 
 - [TypeCheck Overall Architecture and Correctness Contracts (D0, Chinese)](https://github.com/nieyy/mtsql_helper/blob/main/docs/designs/2026-09-04-mtsql-typecheck-overall-design-zh.md)
+- [TypeCheck D2 Result Oracle and Counterexample Reduction (Chinese)](https://github.com/nieyy/mtsql_helper/blob/main/docs/designs/2026-09-05-mtsql-typecheck-result-oracle-counterexample-reduction-design-zh.md)
 
 D0 provides the common contracts and index for focused D1-D4 designs covering
 generation, checking and reduction, adapters, and reporting.

@@ -1,0 +1,712 @@
+{
+  "_note": "Full successful attempt whose A/B results differ (A: -128,NULL vs B: -127,NULL); everything else identical to evidence_success_match. Hand-written expectation for the oracle gates: MISMATCH_CANDIDATE.",
+  "_synthetic": true,
+  "evidence": {
+    "a_context": {
+      "autocommit": true,
+      "current_database": "tc_a",
+      "environment_after": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "environment_before": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "name_map": {
+        "database_a": "tc_a",
+        "database_b": "tc_b",
+        "table_a": "t_a",
+        "table_b": "t_b"
+      },
+      "readback_connection_id": "conn-a-1",
+      "select_connection_id": "conn-a-1",
+      "setup_connection_id": "conn-a-1",
+      "side": "A",
+      "transaction_isolation": "REPEATABLE-READ"
+    },
+    "a_query": {
+      "actual_database": "tc_a",
+      "binding": {
+        "attempt_id": "attempt-d2-fixture-1",
+        "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+        "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+        "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1",
+        "run_id": "run-d2-fixture"
+      },
+      "diagnostics": {
+        "collected": true,
+        "complete": true,
+        "entries": [],
+        "ordinal": 0,
+        "phase": "select",
+        "side": "A",
+        "sql_hash": "dea3ca533b58652fc561bddf21ee5358fb6549d41dd902284c17662a16639952"
+      },
+      "duration_ms": 12,
+      "environment_after": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "environment_before": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "parameters": [],
+      "protocol": "text",
+      "result": {
+        "columns": [
+          {
+            "alias": "c0",
+            "family": "signed_integer",
+            "flags": 0,
+            "mapping_version": "d3-mapping-1",
+            "ordinal": 0,
+            "precision": 3,
+            "scale": 0,
+            "type_code": 15
+          }
+        ],
+        "encoding_version": "mysql-text-1",
+        "extra_result_sets": 0,
+        "fetch_complete": true,
+        "observed_row_count": 2,
+        "payload_hash": "a53230633490e44f56a07c549c2c242feed486685665f27cab4fd90de103322d",
+        "rows": [
+          [
+            {
+              "kind": "integer",
+              "value": "-128"
+            }
+          ],
+          [
+            {
+              "kind": "null"
+            }
+          ]
+        ],
+        "truncated": false
+      },
+      "result_terminal": "CONFIRMED",
+      "select_sql_hash": "dea3ca533b58652fc561bddf21ee5358fb6549d41dd902284c17662a16639952",
+      "select_text": "SELECT `v` AS `c0` FROM `t_a`;",
+      "session_end_id": "sess-a-1",
+      "session_start_id": "sess-a-1",
+      "side": "A",
+      "status": "COMPLETE"
+    },
+    "actual_execution_order": "AB",
+    "b_context": {
+      "autocommit": true,
+      "current_database": "tc_b",
+      "environment_after": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "environment_before": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "name_map": {
+        "database_a": "tc_a",
+        "database_b": "tc_b",
+        "table_a": "t_a",
+        "table_b": "t_b"
+      },
+      "readback_connection_id": "conn-b-1",
+      "select_connection_id": "conn-b-1",
+      "setup_connection_id": "conn-b-1",
+      "side": "B",
+      "transaction_isolation": "REPEATABLE-READ"
+    },
+    "b_query": {
+      "actual_database": "tc_b",
+      "binding": {
+        "attempt_id": "attempt-d2-fixture-1",
+        "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+        "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+        "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1",
+        "run_id": "run-d2-fixture"
+      },
+      "diagnostics": {
+        "collected": true,
+        "complete": true,
+        "entries": [],
+        "ordinal": 0,
+        "phase": "select",
+        "side": "B",
+        "sql_hash": "40e433ac9a5534ddcd73284a72004f72ad9a8230ba1bd7db68a5d4c163d7685e"
+      },
+      "duration_ms": 12,
+      "environment_after": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "environment_before": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "parameters": [],
+      "protocol": "text",
+      "result": {
+        "columns": [
+          {
+            "alias": "c0",
+            "family": "signed_integer",
+            "flags": 0,
+            "mapping_version": "d3-mapping-1",
+            "ordinal": 0,
+            "precision": 3,
+            "scale": 0,
+            "type_code": 15
+          }
+        ],
+        "encoding_version": "mysql-text-1",
+        "extra_result_sets": 0,
+        "fetch_complete": true,
+        "observed_row_count": 2,
+        "payload_hash": "42176c74c5b61c4e2af9298cf2ab018b5af47a00e3edd65876968b6d3070c61f",
+        "rows": [
+          [
+            {
+              "kind": "integer",
+              "value": "-127"
+            }
+          ],
+          [
+            {
+              "kind": "null"
+            }
+          ]
+        ],
+        "truncated": false
+      },
+      "result_terminal": "CONFIRMED",
+      "select_sql_hash": "40e433ac9a5534ddcd73284a72004f72ad9a8230ba1bd7db68a5d4c163d7685e",
+      "select_text": "SELECT `v` AS `c0` FROM `t_b`;",
+      "session_end_id": "sess-b-1",
+      "session_start_id": "sess-b-1",
+      "side": "B",
+      "status": "COMPLETE"
+    },
+    "evidence_hash": "95a346db6055890345804656c9c0191e5cf505dd6547dafcbaf89c6c5df70431",
+    "expectation": {
+      "binding": {
+        "attempt_id": "attempt-d2-fixture-1",
+        "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+        "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+        "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1",
+        "run_id": "run-d2-fixture"
+      },
+      "codec_version": "mysql-text-1",
+      "execution_order": "AB",
+      "name_map": {
+        "database_a": "tc_a",
+        "database_b": "tc_b",
+        "table_a": "t_a",
+        "table_b": "t_b"
+      },
+      "request_hash": "bddacf5bc2b7c9c484183940304dcc7f3ec1562a44760537385d4970c98058fc",
+      "schema_version": 1
+    },
+    "failure": null,
+    "isolation_receipt": {
+      "attempt_id": "attempt-d2-fixture-1",
+      "load_committed": true,
+      "method_version": "d3-isolation-1",
+      "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1",
+      "no_concurrent_write_confirmed": true,
+      "objects_created_confirmed": true,
+      "ownership_ref": "run-d2-fixture/objects/tc_a,tc_b"
+    },
+    "preflight_rejection": null,
+    "request_hash": "bddacf5bc2b7c9c484183940304dcc7f3ec1562a44760537385d4970c98058fc",
+    "runtime_facts": {
+      "a": {
+        "actual_schema": {
+          "columns": [
+            {
+              "name": "rid",
+              "nullable": false,
+              "type": {
+                "kind": "signed_integer",
+                "name": "BIGINT"
+              }
+            },
+            {
+              "name": "v",
+              "nullable": true,
+              "type": {
+                "kind": "signed_integer",
+                "name": "TINYINT"
+              }
+            }
+          ],
+          "index_variant": "none",
+          "logical_id": "t0",
+          "primary_key": [
+            "rid"
+          ]
+        },
+        "isolation_confirmed": true,
+        "load_committed": true,
+        "readback": [
+          [
+            1,
+            {
+              "kind": "integer",
+              "value": "-128"
+            }
+          ],
+          [
+            2,
+            {
+              "kind": "integer",
+              "value": "0"
+            }
+          ],
+          [
+            3,
+            {
+              "kind": "null"
+            }
+          ],
+          [
+            4,
+            {
+              "kind": "integer",
+              "value": "127"
+            }
+          ]
+        ],
+        "readback_complete": true,
+        "statement_receipts": [
+          {
+            "diagnostics_complete": true,
+            "ordinal": 0,
+            "phase": "ddl",
+            "sql_hash": "d76d1831c1548cbfdb13078da850c54b263d14f3e166e67c625ca22ef7c879fd",
+            "success": true
+          },
+          {
+            "diagnostics_complete": true,
+            "ordinal": 0,
+            "phase": "insert",
+            "sql_hash": "07379d99f821a4a08e4059216a54b4b41c43e16adb910c7cea25e2f808b9a947",
+            "success": true
+          }
+        ]
+      },
+      "b": {
+        "actual_schema": {
+          "columns": [
+            {
+              "name": "rid",
+              "nullable": false,
+              "type": {
+                "kind": "signed_integer",
+                "name": "BIGINT"
+              }
+            },
+            {
+              "name": "v",
+              "nullable": true,
+              "type": {
+                "kind": "signed_integer",
+                "name": "SMALLINT"
+              }
+            }
+          ],
+          "index_variant": "none",
+          "logical_id": "t0",
+          "primary_key": [
+            "rid"
+          ]
+        },
+        "isolation_confirmed": true,
+        "load_committed": true,
+        "readback": [
+          [
+            1,
+            {
+              "kind": "integer",
+              "value": "-128"
+            }
+          ],
+          [
+            2,
+            {
+              "kind": "integer",
+              "value": "0"
+            }
+          ],
+          [
+            3,
+            {
+              "kind": "null"
+            }
+          ],
+          [
+            4,
+            {
+              "kind": "integer",
+              "value": "127"
+            }
+          ]
+        ],
+        "readback_complete": true,
+        "statement_receipts": [
+          {
+            "diagnostics_complete": true,
+            "ordinal": 0,
+            "phase": "ddl",
+            "sql_hash": "1415271c57bdd7c18d5f80dad0f178bf0f67fc688feda93d1751a9065235679d",
+            "success": true
+          },
+          {
+            "diagnostics_complete": true,
+            "ordinal": 0,
+            "phase": "insert",
+            "sql_hash": "9219f8b72f111e154ac39b42354dce78e81816ca3651f55e8390b7b8d1c99ddd",
+            "success": true
+          }
+        ]
+      },
+      "binding": {
+        "attempt_id": "attempt-d2-fixture-1",
+        "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+        "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+        "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1",
+        "run_id": "run-d2-fixture"
+      },
+      "facts_schema_version": 1,
+      "name_map": {
+        "database_a": "tc_a",
+        "database_b": "tc_b",
+        "table_a": "t_a",
+        "table_b": "t_b"
+      },
+      "observed_environment": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      }
+    },
+    "schema_version": 1,
+    "setup_diagnostics": [
+      {
+        "collected": true,
+        "complete": true,
+        "entries": [],
+        "ordinal": 0,
+        "phase": "ddl",
+        "side": "A",
+        "sql_hash": "d76d1831c1548cbfdb13078da850c54b263d14f3e166e67c625ca22ef7c879fd"
+      },
+      {
+        "collected": true,
+        "complete": true,
+        "entries": [],
+        "ordinal": 0,
+        "phase": "insert",
+        "side": "A",
+        "sql_hash": "07379d99f821a4a08e4059216a54b4b41c43e16adb910c7cea25e2f808b9a947"
+      },
+      {
+        "collected": true,
+        "complete": true,
+        "entries": [],
+        "ordinal": 0,
+        "phase": "ddl",
+        "side": "B",
+        "sql_hash": "1415271c57bdd7c18d5f80dad0f178bf0f67fc688feda93d1751a9065235679d"
+      },
+      {
+        "collected": true,
+        "complete": true,
+        "entries": [],
+        "ordinal": 0,
+        "phase": "insert",
+        "side": "B",
+        "sql_hash": "9219f8b72f111e154ac39b42354dce78e81816ca3651f55e8390b7b8d1c99ddd"
+      }
+    ],
+    "synthetic": true,
+    "terminal": {
+      "attempt_id": "attempt-d2-fixture-1",
+      "cleanup": "DONE",
+      "owned_objects": [],
+      "termination": "CONFIRMED"
+    }
+  },
+  "expectation": {
+    "binding": {
+      "attempt_id": "attempt-d2-fixture-1",
+      "case_id": "bd3875f716326cd0c0e361fcc52f7db71967558e4113ab8be1bbb99109e6c305",
+      "environment_hash": "c2ee95d16e82218e55972e2fbb6650eeb99406f99da312250d2e8d86ed199506",
+      "name_map_hash": "41047fb4ebfdd9c0a660ebfc0d343b06aa7dd95ab69f00c89a043f80284063a1",
+      "run_id": "run-d2-fixture"
+    },
+    "codec_version": "mysql-text-1",
+    "execution_order": "AB",
+    "name_map": {
+      "database_a": "tc_a",
+      "database_b": "tc_b",
+      "table_a": "t_a",
+      "table_b": "t_b"
+    },
+    "request_hash": "bddacf5bc2b7c9c484183940304dcc7f3ec1562a44760537385d4970c98058fc",
+    "schema_version": 1
+  },
+  "request": {
+    "attempt_id": "attempt-d2-fixture-1",
+    "execution_order": "AB",
+    "payload": {
+      "a_type": {
+        "kind": "signed_integer",
+        "name": "TINYINT"
+      },
+      "b_type": {
+        "kind": "signed_integer",
+        "name": "SMALLINT"
+      },
+      "case_schema_version": 1,
+      "environment": {
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "database": "mysql80",
+        "engine": "innodb",
+        "scope": "same-instance",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00"
+      },
+      "generator": {
+        "id": "g1",
+        "version": "1"
+      },
+      "query": {
+        "projections": [
+          {
+            "alias": "c0",
+            "expr": {
+              "column": "v",
+              "kind": "column_ref"
+            }
+          }
+        ],
+        "template_id": "Q1"
+      },
+      "relation": {
+        "columns": [
+          {
+            "a_family": "signed_integer",
+            "alias": "c0",
+            "b_family": "signed_integer",
+            "null_policy": "preserve",
+            "value_equivalence": "exact_numeric"
+          }
+        ],
+        "mode": "multiset_exact"
+      },
+      "renderer": {
+        "id": "r1",
+        "version": "1"
+      },
+      "rows": [
+        [
+          1,
+          {
+            "kind": "integer",
+            "value": "-128"
+          }
+        ],
+        [
+          2,
+          {
+            "kind": "integer",
+            "value": "0"
+          }
+        ],
+        [
+          3,
+          {
+            "kind": "null"
+          }
+        ],
+        [
+          4,
+          {
+            "kind": "integer",
+            "value": "127"
+          }
+        ]
+      ],
+      "rule": {
+        "rule_id": "mysql80.signed-widen",
+        "rule_version": 1
+      },
+      "table": {
+        "columns": [
+          {
+            "name": "rid",
+            "nullable": false,
+            "type": {
+              "kind": "signed_integer",
+              "name": "BIGINT"
+            }
+          },
+          {
+            "name": "v",
+            "nullable": true,
+            "type": {
+              "kind": "signed_integer",
+              "name": "TINYINT"
+            }
+          }
+        ],
+        "index_variant": "none",
+        "logical_id": "t0",
+        "primary_key": [
+          "rid"
+        ]
+      }
+    },
+    "result_byte_budget": 8388608,
+    "result_row_budget": 1024,
+    "run_id": "run-d2-fixture",
+    "schema_version": 1,
+    "session_profile": {
+      "autocommit": true,
+      "transaction_isolation": "REPEATABLE-READ"
+    },
+    "synthetic": true,
+    "target_environment": {
+      "build_id": "20250715",
+      "character_set": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "engine": "innodb",
+      "instance_identity": "mysql-8039-local",
+      "optimizer_switch": "index_merge=on,mrr=off",
+      "sql_mode_tokens": [
+        "NO_ENGINE_SUBSTITUTION",
+        "ONLY_FULL_GROUP_BY",
+        "STRICT_ALL_TABLES"
+      ],
+      "time_zone": "+00:00",
+      "vendor": "mysql",
+      "version": "8.0.39"
+    },
+    "time_budget_ms": 30000
+  }
+}

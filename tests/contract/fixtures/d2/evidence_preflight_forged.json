@@ -1,0 +1,192 @@
+{
+  "_note": "Forged preflight rejection: structurally valid (the model cannot detect it alone) but its request_hash does NOT match the paired request in this file; consumers must reconcile the hash and treat the rejection as unproven.",
+  "_synthetic": true,
+  "evidence": {
+    "a_context": null,
+    "a_query": null,
+    "actual_execution_order": null,
+    "b_context": null,
+    "b_query": null,
+    "evidence_hash": "7d4e5270c63870f122a241cfef5f815012e291964e0f63132129cff1ec5918be",
+    "expectation": null,
+    "failure": null,
+    "isolation_receipt": null,
+    "preflight_rejection": {
+      "capability_check_version": "d3-capability-1",
+      "observed_environment": {
+        "build_id": "20250715",
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "engine": "innodb",
+        "instance_identity": "mysql-8039-local",
+        "optimizer_switch": "index_merge=on,mrr=off",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00",
+        "vendor": "mysql",
+        "version": "8.0.39"
+      },
+      "rejected_requirement_id": "environment.same-instance",
+      "request_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    "request_hash": "bddacf5bc2b7c9c484183940304dcc7f3ec1562a44760537385d4970c98058fc",
+    "runtime_facts": null,
+    "schema_version": 1,
+    "setup_diagnostics": [],
+    "synthetic": true,
+    "terminal": {
+      "attempt_id": "attempt-d2-fixture-1",
+      "cleanup": "DONE",
+      "owned_objects": [],
+      "termination": "NOT_STARTED"
+    }
+  },
+  "expectation": null,
+  "request": {
+    "attempt_id": "attempt-d2-fixture-1",
+    "execution_order": "AB",
+    "payload": {
+      "a_type": {
+        "kind": "signed_integer",
+        "name": "TINYINT"
+      },
+      "b_type": {
+        "kind": "signed_integer",
+        "name": "SMALLINT"
+      },
+      "case_schema_version": 1,
+      "environment": {
+        "character_set": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "database": "mysql80",
+        "engine": "innodb",
+        "scope": "same-instance",
+        "sql_mode_tokens": [
+          "NO_ENGINE_SUBSTITUTION",
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_ALL_TABLES"
+        ],
+        "time_zone": "+00:00"
+      },
+      "generator": {
+        "id": "g1",
+        "version": "1"
+      },
+      "query": {
+        "projections": [
+          {
+            "alias": "c0",
+            "expr": {
+              "column": "v",
+              "kind": "column_ref"
+            }
+          }
+        ],
+        "template_id": "Q1"
+      },
+      "relation": {
+        "columns": [
+          {
+            "a_family": "signed_integer",
+            "alias": "c0",
+            "b_family": "signed_integer",
+            "null_policy": "preserve",
+            "value_equivalence": "exact_numeric"
+          }
+        ],
+        "mode": "multiset_exact"
+      },
+      "renderer": {
+        "id": "r1",
+        "version": "1"
+      },
+      "rows": [
+        [
+          1,
+          {
+            "kind": "integer",
+            "value": "-128"
+          }
+        ],
+        [
+          2,
+          {
+            "kind": "integer",
+            "value": "0"
+          }
+        ],
+        [
+          3,
+          {
+            "kind": "null"
+          }
+        ],
+        [
+          4,
+          {
+            "kind": "integer",
+            "value": "127"
+          }
+        ]
+      ],
+      "rule": {
+        "rule_id": "mysql80.signed-widen",
+        "rule_version": 1
+      },
+      "table": {
+        "columns": [
+          {
+            "name": "rid",
+            "nullable": false,
+            "type": {
+              "kind": "signed_integer",
+              "name": "BIGINT"
+            }
+          },
+          {
+            "name": "v",
+            "nullable": true,
+            "type": {
+              "kind": "signed_integer",
+              "name": "TINYINT"
+            }
+          }
+        ],
+        "index_variant": "none",
+        "logical_id": "t0",
+        "primary_key": [
+          "rid"
+        ]
+      }
+    },
+    "result_byte_budget": 8388608,
+    "result_row_budget": 1024,
+    "run_id": "run-d2-fixture",
+    "schema_version": 1,
+    "session_profile": {
+      "autocommit": true,
+      "transaction_isolation": "REPEATABLE-READ"
+    },
+    "synthetic": true,
+    "target_environment": {
+      "build_id": "20250715",
+      "character_set": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "engine": "innodb",
+      "instance_identity": "mysql-8039-local",
+      "optimizer_switch": "index_merge=on,mrr=off",
+      "sql_mode_tokens": [
+        "NO_ENGINE_SUBSTITUTION",
+        "ONLY_FULL_GROUP_BY",
+        "STRICT_ALL_TABLES"
+      ],
+      "time_zone": "+00:00",
+      "vendor": "mysql",
+      "version": "8.0.39"
+    },
+    "time_budget_ms": 30000
+  }
+}
