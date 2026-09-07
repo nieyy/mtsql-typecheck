@@ -164,6 +164,13 @@ def _build_parser() -> _Parser:
 
     register_online_commands(subparsers)
     parser._online_commands = frozenset(ONLINE_COMMANDS)  # type: ignore[attr-defined]
+
+    # Delivery subcommands (D4 Phase 5).  The import is deferred like the
+    # online one so offline parser construction stays self-contained.
+    from .delivery import DELIVERY_COMMANDS, register_delivery_commands
+
+    register_delivery_commands(subparsers)
+    parser._delivery_commands = frozenset(DELIVERY_COMMANDS)  # type: ignore[attr-defined]
     return parser
 
 
@@ -441,6 +448,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             from .online import dispatch_online
 
             return dispatch_online(args)
+        if getattr(parser, "_delivery_commands", None) and args.command in parser._delivery_commands:  # type: ignore[attr-defined]
+            # Deferred import (see _build_parser); dispatch_delivery maps
+            # the delivery error families to the shared exit codes.
+            from .delivery import dispatch_delivery
+
+            return dispatch_delivery(args)
         if args.command == "generate":
             previous = _install_sigint_handler(cancel)
             try:

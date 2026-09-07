@@ -111,6 +111,7 @@ arithmetic only.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import re
@@ -150,6 +151,7 @@ __all__ = [
     "TraceBudgetError",
     "TraceWriteError",
     "TraceAudit",
+    "TraceReadLimits",
     "JsonlTraceSink",
     "read_trace",
 ]
@@ -606,6 +608,55 @@ class JsonlTraceSink:
 
 
 @dataclass(frozen=True)
+class TraceReadLimits:
+    """Optional read-side caps for :func:`read_trace` (design 6.5: bounded
+    read-side access; a cap is checked before the corresponding unbounded
+    work happens, and exceeding one raises ``TraceBudgetError``).
+
+    - ``max_records``: complete trace lines that may be decoded.
+    - ``max_line_bytes``: per-line byte cap, checked on the raw bytes BEFORE
+      a line is decoded.
+    - ``max_dependency_bytes``: per-dependency-file byte cap, checked via
+      ``lstat`` BEFORE the file is read.
+    - ``max_dependencies``: distinct dependency files that may be read.
+
+    Every field is ``None`` (unlimited) or a non-negative int (bools are
+    rejected).  All-``None`` keeps the historical unbounded read and exists
+    for compatibility callers only; D4 must always pass real caps.
+    """
+
+    max_records: Optional[int] = None
+    max_line_bytes: Optional[int] = None
+    max_dependency_bytes: Optional[int] = None
+    max_dependencies: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "max_records",
+            "max_line_bytes",
+            "max_dependency_bytes",
+            "max_dependencies",
+        ):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TraceBudgetError(
+                    f"TraceReadLimits.{name} must be a non-negative int or None"
+                )
+            if value < 0:
+                raise TraceBudgetError(
+                    f"TraceReadLimits.{name} must be a non-negative int or None, "
+                    f"got {value}"
+                )
+
+
+def _limit_error(cap_name: str, detail: str) -> TraceBudgetError:
+    """Stable over-cap message shape: the exceeded cap is always named."""
+    return TraceBudgetError(f"trace read limit exceeded: {cap_name}: {detail}")
+
+
+@dataclass(frozen=True)
 class TraceAudit:
     """Read-only verdict over one trace root (see module docstring).
 
@@ -625,8 +676,16 @@ class TraceAudit:
     last_record_hash: Optional[str]
 
 
-def _iter_complete_lines(fh: "BinaryIO") -> Iterator[tuple[bytes, bool]]:
-    """Yield ``(raw_line_without_newline, terminated)`` pairs."""
+def _iter_complete_lines(
+    fh: "BinaryIO", max_line_bytes: Optional[int] = None
+) -> Iterator[tuple[bytes, bool]]:
+    """Yield ``(raw_line_without_newline, terminated)`` pairs.
+
+    With ``max_line_bytes`` the byte length of the current line is checked on
+    every chunk boundary and before every yield, so an over-long line is
+    rejected (``TraceBudgetError``) BEFORE it is ever decoded, and the
+    pending-line buffer stays bounded by the cap plus one read chunk.
+    """
     tail = b""
     while True:
         chunk = fh.read(_READ_CHUNK_BYTES)
@@ -635,8 +694,23 @@ def _iter_complete_lines(fh: "BinaryIO") -> Iterator[tuple[bytes, bool]]:
         parts = (tail + chunk).split(b"\n")
         tail = parts.pop()
         for raw in parts:
+            if max_line_bytes is not None and len(raw) > max_line_bytes:
+                raise _limit_error(
+                    f"max_line_bytes={max_line_bytes}",
+                    f"a trace line is at least {len(raw)} bytes",
+                )
             yield raw, True
+        if max_line_bytes is not None and len(tail) > max_line_bytes:
+            raise _limit_error(
+                f"max_line_bytes={max_line_bytes}",
+                f"a trace line exceeds {max_line_bytes} bytes",
+            )
     if tail:
+        if max_line_bytes is not None and len(tail) > max_line_bytes:
+            raise _limit_error(
+                f"max_line_bytes={max_line_bytes}",
+                f"the unterminated tail line exceeds {max_line_bytes} bytes",
+            )
         yield tail, False
 
 
@@ -664,7 +738,21 @@ def _optional_ref(value: object, what: str) -> Optional[ArtifactRef]:
     return decode_artifact_ref(value, what)
 
 
-def _verify_dependency_file(root: Path, ref: ArtifactRef) -> None:
+def _verify_dependency_file(
+    root: Path,
+    ref: ArtifactRef,
+    limits: Optional[TraceReadLimits] = None,
+    seen_paths: Optional[set[str]] = None,
+) -> None:
+    """Verify one dependency file's layout, size and content hash.
+
+    The content hash is computed by streaming the file in fixed-size chunks
+    (design 6.5: 流式依赖 hash); the full payload is never held in memory.
+    With limits, the per-file byte cap is enforced via ``lstat`` BEFORE the
+    file is read and the distinct-file count is capped; the cap checks raise
+    ``TraceBudgetError`` (not ``ContractError``) so a limit can never be
+    misreported as trace corruption.
+    """
     parts = ref.path.split("/")
     if (
         len(parts) != 2
@@ -674,6 +762,15 @@ def _verify_dependency_file(root: Path, ref: ArtifactRef) -> None:
         raise ContractError(
             f"dependency path {ref.path!r} is outside the {FILES_DIR_NAME}/<sha256>.json layout"
         )
+    if seen_paths is not None and ref.path not in seen_paths:
+        cap = limits.max_dependencies if limits is not None else None
+        if cap is not None and len(seen_paths) >= cap:
+            raise _limit_error(
+                f"max_dependencies={cap}",
+                f"dependency file {ref.path!r} would be the {cap + 1}-th "
+                "distinct dependency file",
+            )
+        seen_paths.add(ref.path)
     files_dir = root / FILES_DIR_NAME
     target = files_dir / parts[1]
     try:
@@ -692,14 +789,21 @@ def _verify_dependency_file(root: Path, ref: ArtifactRef) -> None:
         raise ContractError(f"dependency file {ref.path!r} is missing") from exc
     except OSError as exc:
         raise ContractError(f"cannot inspect dependency file {ref.path!r}: {exc}") from exc
-    digest = bytearray()
+    if limits is not None and limits.max_dependency_bytes is not None:
+        cap = limits.max_dependency_bytes
+        if st.st_size > cap:
+            raise _limit_error(
+                f"max_dependency_bytes={cap}",
+                f"dependency file {ref.path!r} is {st.st_size} bytes",
+            )
+    running = hashlib.sha256()
     with open(target, "rb") as fh:
         while True:
             chunk = fh.read(_READ_CHUNK_BYTES)
             if not chunk:
                 break
-            digest.extend(chunk)
-    if sha256_hex(bytes(digest)) != ref.sha256:
+            running.update(chunk)
+    if running.hexdigest() != ref.sha256:
         raise ContractError(f"dependency file {ref.path!r} content hash mismatch")
 
 
@@ -790,13 +894,33 @@ def _check_accepted_inline(
     return child
 
 
-def read_trace(root: Path) -> TraceAudit:
+def read_trace(root: Path, *, limits: Optional[TraceReadLimits] = None) -> TraceAudit:
     """Read-only audit over one trace root (see module docstring).
 
     Raises ``TracePathError`` for unsafe roots (``..``/symlink components).
     Ordinary absence (missing root or trace.jsonl) is reported as a
     zero-record COMPLETE audit, not an error.
+
+    With ``limits`` (design 6.5 bounded read-side access), reading stops at
+    the first exceeded cap with a ``TraceBudgetError`` naming the cap:
+    ``max_records`` complete lines, ``max_line_bytes`` per raw line (checked
+    before decoding), ``max_dependency_bytes`` per dependency file (checked
+    via ``lstat`` before reading) and ``max_dependencies`` distinct
+    dependency files.  ``limits=None`` keeps the historical unbounded read;
+    D4 must always pass real caps.
     """
+    if limits is not None and not isinstance(limits, TraceReadLimits):
+        raise TraceBudgetError("limits must be a TraceReadLimits or None")
+    record_cap = limits.max_records if limits is not None else None
+    line_cap = limits.max_line_bytes if limits is not None else None
+    dep_byte_cap = limits.max_dependency_bytes if limits is not None else None
+    # The distinct-dependency index only exists while a dependency cap is
+    # enforced; without limits nothing is retained (historical behaviour).
+    seen_dependencies: Optional[set[str]] = (
+        set()
+        if limits is not None and limits.max_dependencies is not None
+        else None
+    )
     absolute = _checked_absolute(Path(root))
     if not os.path.isdir(absolute):
         return TraceAudit(
@@ -838,10 +962,18 @@ def read_trace(root: Path) -> TraceAudit:
         return ContractError(f"record {seq}: {reason}")
 
     with fh:
-        for raw, terminated in _iter_complete_lines(fh):
+        for raw, terminated in _iter_complete_lines(fh, line_cap):
             if not terminated:
                 unterminated_tail = True
                 break
+            # The record cap is checked outside the per-record try below: a
+            # TraceBudgetError is a read-budget signal, never trace corruption
+            # (it must not be swallowed into a CORRUPT verdict).
+            if record_cap is not None and verified >= record_cap:
+                raise _limit_error(
+                    f"max_records={record_cap}",
+                    f"the trace continues beyond {record_cap} records",
+                )
             try:
                 record = decode_trace_record(parse_strict_json(raw))
                 if record.seq != verified + 1:
@@ -852,7 +984,9 @@ def read_trace(root: Path) -> TraceAudit:
                 if record.prev_hash != last_hash:
                     raise corrupt(verified + 1, "stale prev_hash (does not extend the chain)")
                 if record.payload_ref is not None:
-                    _verify_dependency_file(absolute, record.payload_ref)
+                    _verify_dependency_file(
+                        absolute, record.payload_ref, limits, seen_dependencies
+                    )
                 if record.kind == "SNAPSHOT":
                     snapshot_ref = record.payload_ref
                     if record.payload_ref is not None:
@@ -881,6 +1015,8 @@ def read_trace(root: Path) -> TraceAudit:
                     best_ref = record.payload_ref
                     best_source = BEST_SOURCE_ACCEPTED
                     best_complexity = child
+            except TraceBudgetError:
+                raise  # a read-limit hit is a budget signal, not corruption
             except ContractError as exc:
                 corrupt_reason = str(exc)
                 break

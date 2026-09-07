@@ -16,7 +16,10 @@ through compatible schema and data transformations.
 > certification has been performed yet**: online behaviour is exercised in
 > tests through hand-written fakes and protocol fixtures, never against a
 > real database; the honest COVERED/NOT_RUN verification matrix is
-> `docs/runner-d3-verification.md`. D4 reporting is not implemented.
+> `docs/runner-d3-verification.md`. The D4 offline evidence-verification,
+> reporting, and delivery CLI is also implemented (see the D4 offline CLI
+> section below); its honest verification record is
+> `docs/delivery-d4-verification.md`.
 
 ## Motivation
 
@@ -277,15 +280,124 @@ missing marker, extra object, or unconfirmable termination quarantines the
 run: no further dispatch, leftovers inventoried by `cleanup`, manual
 resolution required.
 
+### Implemented: D4 offline evidence verification, reporting, and delivery CLI
+
+The `mt-typecheck` entry point additionally provides three offline commands —
+`evidence-verify`, `report`, and `export` — that turn already-written
+evidence into verifiable snapshots, reviewable reports, and standalone
+SQL/regression packages. Like `generate`/`validate`, they never accept a DSN,
+a target file, or a password, never import a database driver, and make no
+network calls. Their exit codes are defined separately from both tables above
+and computed by one shared mapping.
+
+```console
+$ mt-typecheck evidence-verify --input /data/typecheck/run-001 --output /data/typecheck/check-001
+$ mt-typecheck report --input /data/typecheck/reduce-001 --output /data/typecheck/report-001 \
+      [--review /data/typecheck/review.json ...]
+$ mt-typecheck export --input /data/typecheck/report-001 --case-id <case-id> \
+      --select original --format sql --output /data/typecheck/repro-001 \
+      [--occurrence-id <occurrence-id>] [--review FILE ...]
+$ mt-typecheck export --input /data/typecheck/report-002 --case-id <original-case-id> \
+      --select best --format regression --review /data/typecheck/review.json \
+      --output /data/typecheck/regression-001
+```
+
+Input is always a single directory whose native format is auto-detected: a
+D1 generation bundle, a D3 run, a D2 `trace.jsonl` (its `replay-result.json`
+/ `reduce-result.json` belong to the same format), a standalone attempt, or
+an existing D4 delivery package. `--input-kind
+generation|run|trace|attempt|delivery` is a diagnostic hint for a missing
+root summary only; it cannot hide anything. Evidence that contradicts the
+hint, roots carrying several mutually exclusive markers, and additional
+orphan files (which are recorded, never dropped) are still detected and
+reported. Reports never aggregate multiple runs — mixing builds or rule
+versions silently is exactly what the design forbids; compare separate
+`report.json` files explicitly instead.
+
+`evidence-verify` writes a verification package (`evidence-manifest.json`,
+`assessment.json`, and the immutable `raw/<source-id>/...` snapshot tree)
+with no display pages. `report` additionally renders `report.json`,
+`report.md`, and `report.html`; running `evidence-verify` first is not
+required. `report.json` is the single structured record of facts — Markdown
+and HTML are formatting of exactly the same content — and no report ever
+shows an aggregate PASS: partial evidence, checks that were not recomputed,
+UNVERIFIED provenance, UNKNOWN/UNSAFE execution safety, and review conflicts
+stay visible in every rendering.
+
+Exit codes (evaluated top-down; several causes keep every reason recorded):
+
+| Code | Meaning |
+| --- | --- |
+| 0 | `evidence-verify`/`report` completed every applicable check and none of the conditions below applies; or `export` completed fully under the delivery gates. This is an offline outcome only — never a statement about database correctness. |
+| 4 | `evidence-verify`/`report` completed every applicable check and the evidence contains a recomputable candidate. A candidate is not a confirmed bug. |
+| 3 | Nothing was rejected, but work is PARTIAL, applicable checks were not recomputed, provenance is UNVERIFIED, execution safety is UNKNOWN/UNSAFE, a review conflict survives, or the audit budget expired. |
+| 2 | Illegal, corrupt, or unknown-schema input; a structural/semantic/provenance CONFLICT; an illegal review file; or an ambiguous case/occurrence selection. |
+| 1 | Tool-internal failure or output I/O failure (including ENOSPC). |
+| 130 | Cancelled by the user (SIGINT); no COMPLETE manifest is published. |
+
+`export` writes a standalone reproduction package into a new directory:
+`delivery-manifest.json`, `README.md`, `case.json`, `expected.json`,
+`environment-requirements.json`, `a.sql`, `b.sql`, `origin.json`; the
+regression format adds `regression-case.json` and a copy of the accepted
+review. `a.sql`/`b.sql` each contain the whitelisted session `SET`
+statements, `CREATE DATABASE` (never `IF NOT EXISTS`), `USE`, the table DDL,
+the exact `INSERT`s, and the `SELECT`. The case SQL is rendered by the D1
+renderer with the database/USE/SET wrapping added — SQL is never extracted
+from logs or string-rewritten, session values are rendered only from
+validated typed fields against a variable whitelist (a hostile session value
+cannot compose a second statement), and physical database/table names come
+from a legal random token recorded in the export NameMap without changing
+logical case identity. There is no `DROP`, no `mysql --force`, and no
+automatic cleanup: a name collision stops the run and the operator exports
+into a fresh directory with a fresh token.
+
+Boundaries worth stating plainly:
+
+- The export package is **not** a D1 generation bundle and cannot be fed to
+  `run --input` (which only accepts generation bundles); this version also
+  does not re-import an export package as `report` input.
+- `expected.json` holds the relational assertion (for example "both sides'
+  typed multisets are exactly equal", with a separate reference to the
+  historical observation) — never the mismatching database output as a
+  "correct" expectation.
+- `--format regression` requires a valid human review with decision
+  `CONFIRMED_DB_BUG` and a recomputable candidate; `--select best`
+  additionally requires a verified `ACCEPTED` ancestor chain and a current
+  best reference — without a valid best the command fails instead of
+  silently falling back to `original`. A review conflict refuses the
+  regression export.
+- SQL debug export (`--select original --format sql`) is allowed without a
+  review, but the package README then marks the case as an unverified
+  candidate. Cases with broken identity/prerequisites are refused for any
+  executable export.
+- Each command creates its output directory exclusively (an existing
+  directory is refused; nothing is ever overwritten) and exposes the limit
+  flags `--time-budget-seconds`, `--max-input-mib`, and `--max-output-mib`;
+  none of them can be set to unlimited.
+
 ## Testing
 
-Two groups (D3 design section 7, 整体验收):
+Three groups (D3 design section 7 and the D4 design Phase 5 regrouping):
 
-- **Offline** (default; no mysql extra required):
+- **Offline core** (default; no mysql extra installed, no PyMySQL
+  importable):
+  `python -m pytest --strict-markers -m 'not mysql and not integration'
+  --ignore=tests/unit/adapters --ignore=tests/unit/runner
+  --ignore=tests/unit/cli/test_installed_cli.py`
+- **Protocol regression** (pinned `mysql` extra installed; still strictly
+  offline, no target, no credentials):
   `python -m pytest --strict-markers -m 'not mysql and not integration'`
 - **Online `mysql` group** (requires the certified driver and a live,
   authorized target): `TYPECHECK_TARGET_CONFIG=/secure/target.json python -m
   pytest --strict-markers -m mysql`
+
+The first group runs the D4/core and offline D1/D2 suites in an environment
+without the driver; the second runs the D3 protocol tests (which import
+PyMySQL at collection time) with the pinned driver installed. Neither group
+deletes or skips protocol tests for a missing driver — the split lives in
+`.github/workflows/ci.yml` (`offline-core` and `protocol-offline` jobs).
+The D4 offline closed-loop test `tests/integration/test_delivery_offline.py`
+carries no online marker and is collected by the default offline runs.
 
 The `mysql` and `integration` markers are registered in `pyproject.toml` and
 deselected by the offline command. Selecting the `mysql` group without a
@@ -300,6 +412,7 @@ The authoritative design is maintained in the `mtsql_helper` repository:
 - [TypeCheck Overall Architecture and Correctness Contracts (D0, Chinese)](https://github.com/nieyy/mtsql_helper/blob/main/docs/designs/2026-09-04-mtsql-typecheck-overall-design-zh.md)
 - [TypeCheck D2 Result Oracle and Counterexample Reduction (Chinese)](https://github.com/nieyy/mtsql_helper/blob/main/docs/designs/2026-09-05-mtsql-typecheck-result-oracle-counterexample-reduction-design-zh.md)
 - [TypeCheck D3 Runner and Database Adapter (Chinese)](https://github.com/nieyy/mtsql_helper/blob/main/docs/designs/2026-09-06-mtsql-typecheck-runner-database-adapter-design-zh.md)
+- [TypeCheck D4 Evidence, Reporting, and Regression Delivery (Chinese)](https://github.com/nieyy/mtsql_helper/blob/main/docs/designs/2026-09-06-mtsql-typecheck-evidence-reporting-regression-delivery-design-zh.md)
 
 D0 provides the common contracts and index for focused D1-D4 designs covering
 generation, checking and reduction, adapters, and reporting.
@@ -313,5 +426,6 @@ Cross-engine differences are not automatically database bugs.
 
 ## License
 
-The repository license has not been selected. Third-party code must not be
-imported until its license and provenance have been reviewed.
+This project is released under the MIT License; see `LICENSE` for the full
+text. Third-party code must still not be imported until its license and
+provenance have been reviewed.

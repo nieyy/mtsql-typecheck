@@ -91,6 +91,7 @@ from mtsql_typecheck.contracts.codec import (
     parse_strict_json,
     sha256_hex,
 )
+from mtsql_typecheck.contracts.execution import Control
 from mtsql_typecheck.generation.generator import (
     GenerationResult,
     generate_cases,
@@ -116,6 +117,7 @@ __all__ = [
     "OutputDirExistsError",
     "UnsafePathError",
     "BundleBudget",
+    "BundleReadLimits",
     "WriteOutcome",
     "ProblemKind",
     "ValidationProblem",
@@ -157,6 +159,105 @@ class UnsafePathError(BundleError):
 
 class BundleBudgetError(BundleError):
     """The configured budget cannot hold profile + initial manifest + reserve."""
+
+
+@dataclass(frozen=True)
+class BundleReadLimits:
+    """Optional read-side caps for :func:`validate_output_dir` (design 6.5:
+    the D1 validator's potentially long traversal must be boundable, not
+    guarded by a one-off time check before the call).
+
+    Every field is ``None`` (unlimited) or a non-negative int (bools are
+    rejected).  All-``None`` keeps the historical unbounded validation and
+    exists for compatibility callers only; D4 must always pass real caps.
+
+    - ``max_files``: file reads the validator may perform.
+    - ``max_file_bytes``: per-file byte cap, enforced via ``lstat`` BEFORE a
+      file is read.
+    - ``max_total_bytes``: cumulative bytes the validator may read.
+    """
+
+    max_files: Optional[int] = None
+    max_file_bytes: Optional[int] = None
+    max_total_bytes: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        for name in ("max_files", "max_file_bytes", "max_total_bytes"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise BundleBudgetError(
+                    f"BundleReadLimits.{name} must be a non-negative int or None"
+                )
+            if value < 0:
+                raise BundleBudgetError(
+                    f"BundleReadLimits.{name} must be a non-negative int or "
+                    f"None, got {value}"
+                )
+
+
+class _ReadBounds:
+    """Mutable read accounting for one ``validate_output_dir`` call.
+
+    Exists only when limits or a control are configured; with neither, the
+    historical code path runs unchanged.  A cap is checked BEFORE the
+    corresponding unbounded work; exceeding one raises ``BundleBudgetError``
+    naming the cap (a budget signal, never listed as a bundle problem), and
+    a cancelled/expired control raises at every loop boundary.
+    """
+
+    __slots__ = ("limits", "control", "files_read", "bytes_read")
+
+    def __init__(
+        self,
+        limits: Optional[BundleReadLimits],
+        control: Optional["Control"],
+    ) -> None:
+        self.limits = limits
+        self.control = control
+        self.files_read = 0
+        self.bytes_read = 0
+
+    def check_point(self) -> None:
+        """Cooperative cancellation/deadline check (one loop boundary)."""
+        if self.control is None:
+            return
+        if self.control.expired():
+            raise BundleBudgetError(
+                "bundle read limit exceeded: the validation deadline expired "
+                "before the bundle could be fully validated"
+            )
+        self.control.raise_if_cancelled()
+
+    def before_read(self, path: Path, size: int) -> None:
+        """Pre-read caps: file count, per-file bytes and cumulative bytes."""
+        self.check_point()
+        if self.limits is None:
+            return
+        file_cap = self.limits.max_files
+        if file_cap is not None and self.files_read >= file_cap:
+            raise BundleBudgetError(
+                f"bundle read limit exceeded: max_files={file_cap}: the "
+                f"validator would read a {file_cap + 1}-th file"
+            )
+        file_bytes_cap = self.limits.max_file_bytes
+        if file_bytes_cap is not None and size > file_bytes_cap:
+            raise BundleBudgetError(
+                f"bundle read limit exceeded: max_file_bytes={file_bytes_cap}: "
+                f"file {str(path)!r} is {size} bytes"
+            )
+        total_cap = self.limits.max_total_bytes
+        if total_cap is not None and self.bytes_read + size > total_cap:
+            raise BundleBudgetError(
+                f"bundle read limit exceeded: max_total_bytes={total_cap}: "
+                f"reading {str(path)!r} ({size} bytes) would exceed the "
+                f"{total_cap}-byte total after {self.bytes_read} bytes"
+            )
+
+    def after_read(self, size: int) -> None:
+        self.files_read += 1
+        self.bytes_read += size
 
 
 # --------------------------------------------------------------------------
@@ -667,8 +768,17 @@ def _read_capped(
     path: Path,
     problems: list[ValidationProblem],
     cap: int = MAX_BUNDLE_BYTES_HARD_CAP,
+    bounds: Optional[_ReadBounds] = None,
 ) -> Optional[bytes]:
-    """Read a file only after checking size and symlink status (design 6.5)."""
+    """Read a file only after checking size and symlink status (design 6.5).
+
+    With ``bounds``, the read caps and the control are checked BEFORE the
+    file is read; exceeding one raises ``BundleBudgetError``/``ControlCancelled``
+    instead of listing a problem (an over-cap read is a budget signal, never
+    a bundle verdict).
+    """
+    if bounds is not None:
+        bounds.check_point()
     try:
         file_stat = os.lstat(path)
     except FileNotFoundError:
@@ -693,12 +803,17 @@ def _read_capped(
             )
         )
         return None
+    if bounds is not None:
+        bounds.before_read(path, file_stat.st_size)
     try:
         with open(path, "rb") as handle:
-            return handle.read()
+            data = handle.read()
     except OSError as exc:
         problems.append(_io(ProblemKind.IO_ERROR, str(path), f"cannot read file: {exc}"))
         return None
+    if bounds is not None:
+        bounds.after_read(len(data))
+    return data
 
 
 def _strict_document(
@@ -918,6 +1033,7 @@ def _validate_case_directory(
     case_id: str,
     entry: CaseFileEntry,
     problems: list[ValidationProblem],
+    bounds: Optional[_ReadBounds] = None,
 ) -> Optional[tuple[CasePayload, dict[str, bytes]]]:
     """Re-derive everything for one referenced case; trust nothing (6.6)."""
     rel = f"{CASES_DIRNAME}/{case_id}"
@@ -960,7 +1076,9 @@ def _validate_case_directory(
                 )
     files: dict[str, bytes] = {}
     for name in CASE_FILE_ORDER:
-        data = _read_capped(case_dir / name, problems)
+        if bounds is not None:
+            bounds.check_point()
+        data = _read_capped(case_dir / name, problems, bounds=bounds)
         if data is None:
             if names is not None and name not in names:
                 problems.append(
@@ -1119,7 +1237,12 @@ def _validate_case_directory(
     return payload, files
 
 
-def validate_output_dir(path: Path) -> ValidationReport:
+def validate_output_dir(
+    path: Path,
+    *,
+    limits: Optional[BundleReadLimits] = None,
+    control: Optional[Control] = None,
+) -> ValidationReport:
     """Offline validation of a written bundle; strictly read-only.
 
     Re-derives everything: the manifest via the strict loader, the profile
@@ -1128,7 +1251,24 @@ def validate_output_dir(path: Path) -> ValidationReport:
     and the counter conservation (design 6.6).  Missing manifest -> cannot
     verify (exit-2 class); a legal PARTIAL/ABORTED/legacy RUNNING with valid
     referenced content stays exit 3.
+
+    Bounded entry (design 6.5): with ``limits``, the traversal stops at the
+    first exceeded cap — file count, per-file bytes (checked via ``lstat``
+    before reading) or cumulative bytes — by raising ``BundleBudgetError``
+    naming the cap; no partial ValidationReport is produced for an over-cap
+    bundle.  With ``control``, cancellation and the deadline are checked at
+    every loop boundary and before every file read: cancellation raises
+    ``ControlCancelled``, an expired deadline raises ``BundleBudgetError``.
+    No existing check is weakened: ``limits=None, control=None`` (the
+    default) keeps the historical behavior and results byte-for-byte.
     """
+    if limits is not None and not isinstance(limits, BundleReadLimits):
+        raise BundleBudgetError("limits must be a BundleReadLimits or None")
+    bounds = (
+        None
+        if limits is None and control is None
+        else _ReadBounds(limits, control)
+    )
     problems: list[ValidationProblem] = []
     out = Path(path)
     manifest_status: Optional[GenerationStatus] = None
@@ -1158,7 +1298,7 @@ def validate_output_dir(path: Path) -> ValidationReport:
         return ValidationReport(out, None, tuple(problems), 0, None)
 
     # ---- manifest ----
-    manifest_bytes = _read_capped(out / MANIFEST_NAME, problems)
+    manifest_bytes = _read_capped(out / MANIFEST_NAME, problems, bounds=bounds)
     if manifest_bytes is None:
         problems.append(
             _corrupt(
@@ -1206,6 +1346,8 @@ def validate_output_dir(path: Path) -> ValidationReport:
     if entries is not None:
         complete_claim = manifest_status is GenerationStatus.COMPLETE
         for item in entries:
+            if bounds is not None:
+                bounds.check_point()
             if item.name in _TOP_LEVEL_NAMES:
                 if item.is_symlink():
                     problems.append(
@@ -1244,6 +1386,8 @@ def validate_output_dir(path: Path) -> ValidationReport:
         cases_scan = _scan_dir(out / CASES_DIRNAME, problems)
         if cases_scan is not None:
             for item in cases_scan:
+                if bounds is not None:
+                    bounds.check_point()
                 if item.is_symlink():
                     problems.append(
                         _corrupt(
@@ -1276,7 +1420,7 @@ def validate_output_dir(path: Path) -> ValidationReport:
 
     # ---- profile.json ----
     if manifest is not None:
-        profile_bytes = _read_capped(out / PROFILE_NAME, problems)
+        profile_bytes = _read_capped(out / PROFILE_NAME, problems, bounds=bounds)
         if profile_bytes is None:
             problems.append(
                 _corrupt(
@@ -1321,6 +1465,8 @@ def validate_output_dir(path: Path) -> ValidationReport:
             if receipt.outcome is OrdinalOutcome.EMITTED and receipt.case_id is not None
         }
         for case_id, entry in sorted(entries_by_id.items()):
+            if bounds is not None:
+                bounds.check_point()
             if case_id not in emitted_ids:
                 problems.append(
                     _corrupt(
@@ -1329,10 +1475,14 @@ def validate_output_dir(path: Path) -> ValidationReport:
                         "case_files entry is not referenced by any emitted ordinal receipt",
                     )
                 )
-            result = _validate_case_directory(out / CASES_DIRNAME, case_id, entry, problems)
+            result = _validate_case_directory(
+                out / CASES_DIRNAME, case_id, entry, problems, bounds=bounds
+            )
             if result is not None:
                 cases_validated += 1
         for receipt in manifest.receipts:
+            if bounds is not None:
+                bounds.check_point()
             if receipt.outcome is OrdinalOutcome.EMITTED:
                 if receipt.case_id not in entries_by_id:
                     problems.append(
@@ -1346,6 +1496,8 @@ def validate_output_dir(path: Path) -> ValidationReport:
 
         # ---- unreferenced directories on disk ----
         for name in sorted(case_dir_names - set(entries_by_id)):
+            if bounds is not None:
+                bounds.check_point()
             if len(name) == 64 and all(c in "0123456789abcdef" for c in name):
                 problems.append(
                     _incomplete(

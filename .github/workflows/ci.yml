@@ -1,16 +1,31 @@
-# Minimal CI for mtsql-typecheck (D3 design section 7, Phase 6:
-# "CI offline/mysql 分组及 wheel 安装检查"; 整体验收 table).
+# CI for mtsql-typecheck (D3 design section 7 Phase 6: "CI offline/mysql 分组
+# 及 wheel 安装检查"; regrouped by the D4 evidence/reporting/delivery design
+# Phase 5: "纯 D4/core 在无 PyMySQL 环境执行，原 D3 协议测试在安装固定
+# `mysql` extra 的离线 job 执行").
 #
-# Two test groups, per the design:
-# - offline: the default suite, run WITHOUT the mysql extra installed.
-#   Command: python -m pytest --strict-markers -m 'not mysql and not integration'
-#   (pyproject.toml declares both the `mysql` and `integration` markers as
-#   "deselected by default CI"; today no test carries either marker, so this
-#   runs the full offline suite.)
-# - mysql-online: the `mysql` marker group, gated on a live target.  Per the
-#   design, "mysql 组被明确选中却没有 target 时须报环境配置失败，不能整组
-#   skip 后返回绿灯": without TYPECHECK_TARGET_CONFIG this job FAILS, it does
-#   not skip.
+# Test groups:
+# - offline-core: the default offline suite WITHOUT the mysql extra, so no
+#   PyMySQL is importable. The tests that import the driver at collection
+#   time — tests/unit/adapters, tests/unit/runner (its execution/preflight
+#   modules import adapters.mysql_protocol), and the installed-CLI wheel
+#   tests tests/unit/cli/test_installed_cli.py — are excluded here by path
+#   and run in the protocol-offline job instead. Protocol tests are never
+#   deleted and never skipped green for a missing driver. The D4 offline
+#   closed-loop test tests/integration/test_delivery_offline.py carries no
+#   online marker, so it is collected by this job once it lands.
+# - protocol-offline: the FULL offline suite (`-m 'not mysql and not
+#   integration'`) with the pinned `mysql` extra installed. Still strictly
+#   offline: this job receives no target configuration and no credentials,
+#   and no test in it connects to anything. Covers the D3 protocol group and
+#   the "install pinned mysql extra" regression row of the design acceptance
+#   table.
+# - wheel-install: build the wheel and exercise the installed CLI from a
+#   venv outside the source tree — deliberately no PYTHONPATH and no
+#   editable install, so missing wheel files cannot be shadowed.
+# - mysql-online: the `mysql` marker group, gated on a live target. Per the
+#   D3 design, "mysql 组被明确选中却没有 target 时须报环境配置失败，不能
+#   整组 skip 后返回绿灯": without TYPECHECK_TARGET_CONFIG this job FAILS,
+#   it does not skip. It never participates in D4 offline acceptance.
 name: ci
 
 on:
@@ -18,8 +33,8 @@ on:
   pull_request:
 
 jobs:
-  offline:
-    name: offline suite (no mysql extra)
+  offline-core:
+    name: offline core suite (no driver, no mysql extra)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -30,9 +45,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install (offline core + test deps only)
+      - name: Install (offline core + test deps only, no mysql extra)
         run: python -m pip install -e '.[test]'
-      - name: Offline regression
+      - name: Offline core regression (D4/core without PyMySQL)
+        run: >-
+          python -m pytest --strict-markers -m 'not mysql and not integration'
+          --ignore=tests/unit/adapters
+          --ignore=tests/unit/runner
+          --ignore=tests/unit/cli/test_installed_cli.py
+
+  protocol-offline:
+    name: protocol regression (pinned mysql extra, offline, no target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install with the pinned certified driver (no target, no secrets)
+        run: python -m pip install -e '.[test,mysql]'
+      - name: Full offline regression including the D3 protocol group
         run: python -m pytest --strict-markers -m 'not mysql and not integration'
 
   wheel-install:
@@ -55,6 +87,38 @@ jobs:
           for c in generate validate preflight run replay reduce cleanup; do
             /tmp/wheel-venv/bin/mt-typecheck "$c" --help > /dev/null
           done
+      # ---- D4 installed-CLI offline closed loop (design 6.3 / Phase 5) ----
+      # The three new subcommands run on real file inputs inside the wheel
+      # venv only — no driver, no target, no network, and NO PYTHONPATH /
+      # editable install of the source tree that could shadow files missing
+      # from the wheel.
+      - name: D4 installed-CLI offline closed loop
+        run: |
+          set -eu
+          MT=/tmp/wheel-venv/bin/mt-typecheck
+          WORK=$(mktemp -d)
+          # generate a real D1 bundle (offline, stdlib only)
+          $MT generate --profile mysql80-exact-v1 --seed 42 --cases 2 --output "$WORK/gen-001"
+          CASE_ID=$(ls "$WORK/gen-001/cases" | head -1)
+          # report over the bundle, then move the derived delivery package
+          $MT report --input "$WORK/gen-001" --output "$WORK/report-001"
+          mv "$WORK/report-001" "$WORK/report-moved"
+          # verify the moved package
+          $MT evidence-verify --input "$WORK/report-moved" --output "$WORK/check-001"
+          # SQL debug export succeeds without a review (exit 0)
+          $MT export --input "$WORK/report-moved" --case-id "$CASE_ID" \
+            --select original --format sql --output "$WORK/repro-001"
+          # regression export without the required human review is refused (exit 3)
+          rc=0
+          $MT export --input "$WORK/report-moved" --case-id "$CASE_ID" \
+            --select original --format regression --output "$WORK/reg-001" || rc=$?
+          test "$rc" -eq 3
+          # a tampered package (missing dependency file) is refused (exit 2)
+          RAW=$(ls -d "$WORK/report-moved/raw/"*/ | head -1)
+          rm "$(find "$RAW" -type f | head -1)"
+          rc=0
+          $MT evidence-verify --input "$WORK/report-moved" --output "$WORK/check-tampered" || rc=$?
+          test "$rc" -eq 2
 
   mysql-online:
     name: mysql marker group (live target required)
