@@ -716,3 +716,225 @@ def test_compare_multisets_witness_encoding_contract_is_visible() -> None:
     assert counts.a_rows == counts.b_rows == 1
     assert witness == ()
     assert truncated is False
+
+
+# --------------------------------------------------------------------------
+# D3 online-handover fixes (A01/A02/A04): gate 1 expectation-binding
+# consistency, gate 4 session identity, preflight ordering/proof, and the
+# comparison deadline binding.
+# --------------------------------------------------------------------------
+
+
+def _tamper_expectation_binding(bundle, field: str, value):
+    """Reseal first, then corrupt one ExpectedBinding field inside the
+    expectation (and its embedded copy) so the only inconsistency is the
+    tampered value, not a stale seal."""
+    bundle.reseal()
+    bundle.expectation["binding"][field] = value
+    if isinstance(bundle.evidence.get("expectation"), dict):
+        bundle.evidence["expectation"]["binding"][field] = value
+    bundle.reseal_evidence_hash()
+    return bundle.compare()
+
+
+def test_expectation_binding_run_id_mismatch_is_binding_mismatch() -> None:
+    outcome = _tamper_expectation_binding(match_bundle(), "run_id", "run-other")
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("BINDING_MISMATCH",)
+
+
+def test_expectation_binding_attempt_id_mismatch_is_binding_mismatch() -> None:
+    outcome = _tamper_expectation_binding(match_bundle(), "attempt_id", "attempt-other")
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("BINDING_MISMATCH",)
+
+
+def test_expectation_binding_environment_hash_mismatch_is_binding_mismatch() -> None:
+    outcome = _tamper_expectation_binding(match_bundle(), "environment_hash", "b" * 64)
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("BINDING_MISMATCH",)
+
+
+def test_expectation_binding_name_map_hash_mismatch_is_binding_mismatch() -> None:
+    outcome = _tamper_expectation_binding(match_bundle(), "name_map_hash", "c" * 64)
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("BINDING_MISMATCH",)
+
+
+def test_session_identity_mismatch_from_context_is_binding_mismatch() -> None:
+    """A02 gate 4: both session ids present but not equal to the side
+    context's select_connection_id is a cross-session mislink
+    (query_session_identity), not a plain incompleteness."""
+    bundle = match_bundle()
+    bundle.reseal()
+    bundle.tamper("evidence.a_query.session_start_id", "sess-other")
+    bundle.tamper("evidence.a_query.session_end_id", "sess-other")
+    bundle.reseal_evidence_hash()
+    outcome = bundle.compare()
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("BINDING_MISMATCH",)
+
+
+def test_preflight_rejection_proven_by_pending_vendor_build_is_not_applicable() -> None:
+    from conftest import load_d2_doc
+
+    bundle = match_bundle()
+    preflight = load_d2_doc("evidence_preflight_rejection")
+    evidence = preflight["evidence"]
+    # An unobserved vendor/build leaves the vendor_build condition PENDING;
+    # a PENDING condition proves the rejected requirement was unmet.
+    evidence["preflight_rejection"]["rejected_requirement_id"] = "environment.vendor_build"
+    evidence["preflight_rejection"]["observed_environment"]["vendor"] = ""
+    evidence["preflight_rejection"]["observed_environment"]["build_id"] = ""
+    bundle.evidence = evidence
+    bundle.expectation = preflight["expectation"]
+    bundle.reseal()
+    outcome = bundle.compare()
+    assert outcome.status is ComparisonStatus.NOT_APPLICABLE
+    assert outcome.reasons == ("UNSUPPORTED_ENVIRONMENT",)
+
+
+def test_unproven_preflight_rejection_is_inconclusive_input_invalid() -> None:
+    """A02: the observed snapshot must actually violate the rejected
+    requirement; a snapshot that satisfies it proves nothing."""
+    from conftest import load_d2_doc
+
+    bundle = match_bundle()
+    preflight = load_d2_doc("evidence_preflight_rejection")
+    evidence = preflight["evidence"]
+    # The rejected time_zone requirement is +00:00; observing +00:00 does not
+    # prove the environment was unsupported.
+    evidence["preflight_rejection"]["observed_environment"]["time_zone"] = "+00:00"
+    bundle.evidence = evidence
+    bundle.expectation = preflight["expectation"]
+    bundle.reseal()
+    outcome = bundle.compare()
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("INPUT_INVALID",)
+
+
+def test_same_instance_rejection_is_not_evaluable_from_one_snapshot() -> None:
+    """A02 documented exception: environment.same-instance is never provable
+    from a single snapshot (the D3 server-uuid check owns it), so a rejection
+    claiming it is INPUT_INVALID, never NOT_APPLICABLE."""
+    from conftest import load_d2_doc
+
+    bundle = match_bundle()
+    preflight = load_d2_doc("evidence_preflight_rejection")
+    evidence = preflight["evidence"]
+    evidence["preflight_rejection"]["rejected_requirement_id"] = "environment.same-instance"
+    bundle.evidence = evidence
+    bundle.expectation = preflight["expectation"]
+    bundle.reseal()
+    outcome = bundle.compare()
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("INPUT_INVALID",)
+
+
+def test_preflight_rejection_after_static_invalid_is_not_not_applicable() -> None:
+    """A02 ordering: the preflight branch sits behind gate 2, so a request
+    that is already statically invalid stays INCONCLUSIVE (VERSION_UNSUPPORTED)
+    even when it also carries a hash-consistent rejection."""
+    from conftest import load_d2_doc
+
+    bundle = match_bundle()
+    bundle.tamper("request.payload.rule.rule_id", "mysql80.unknown-rule")
+    preflight = load_d2_doc("evidence_preflight_rejection")
+    evidence = preflight["evidence"]
+    # Re-bind the rejection to the now-modified request so the ONLY failure
+    # is the static rule check.
+    evidence["preflight_rejection"]["request_hash"] = sha256_hex(
+        canonical_json(bundle.request)
+    )
+    bundle.evidence = evidence
+    bundle.expectation = preflight["expectation"]
+    bundle.reseal()
+    outcome = bundle.compare()
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("VERSION_UNSUPPORTED",)
+
+
+class _AdvancingClock:
+    """Injectable monotonic clock (whole milliseconds) for deadline tests."""
+
+    def __init__(self, now_ms: int = 0) -> None:
+        self.now_ms = now_ms
+
+    def advance_ms(self, ms: int) -> None:
+        self.now_ms += ms
+
+    def __call__(self) -> float:
+        return self.now_ms / 1000
+
+
+def _compare_with_control(bundle, control):
+    return compare_case(
+        load_attempt_request(bundle.request),
+        load_attempt_expectation(bundle.expectation),
+        load_execution_evidence(bundle.evidence),
+        default_budget(),
+        control,
+    )
+
+
+def _deadline_control(clock: _AdvancingClock):
+    from mtsql_typecheck.contracts.execution import Control
+
+    return Control(clock=clock, deadline=clock() + 0.010, cancelled=lambda: False)
+
+
+def test_deadline_during_multiset_comparison_is_inconclusive(monkeypatch) -> None:
+    """A04: a deadline reached mid-comparison must yield INCONCLUSIVE
+    COMPARISON_DEADLINE, never a partial MISMATCH_CANDIDATE."""
+    import mtsql_typecheck.oracle.gates as gates
+
+    bundle = match_bundle()
+    clock = _AdvancingClock()
+    real_compare = gates.compare_multisets
+
+    def slow_compare(*args, **kwargs):
+        clock.advance_ms(1000)
+        return real_compare(*args, **kwargs)
+
+    monkeypatch.setattr(gates, "compare_multisets", slow_compare)
+    outcome = _compare_with_control(bundle, _deadline_control(clock))
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("COMPARISON_DEADLINE",)
+    assert outcome.comparable is False
+    assert outcome.exact_signature is None
+
+
+def test_deadline_during_signature_counts_is_inconclusive(monkeypatch) -> None:
+    import mtsql_typecheck.oracle.gates as gates
+
+    # The signature section of gate 6 is only reached for a MISMATCH_CANDIDATE
+    # (a MATCH returns right after the multiset comparison).
+    bundle = candidate_bundle()
+    clock = _AdvancingClock()
+    real_counts = gates._signature_key_counts
+
+    def slow_counts(rows):
+        clock.advance_ms(1000)
+        return real_counts(rows)
+
+    monkeypatch.setattr(gates, "_signature_key_counts", slow_counts)
+    outcome = _compare_with_control(bundle, _deadline_control(clock))
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("COMPARISON_DEADLINE",)
+
+
+def test_deadline_during_exact_signature_is_inconclusive(monkeypatch) -> None:
+    import mtsql_typecheck.oracle.gates as gates
+
+    bundle = candidate_bundle()
+    clock = _AdvancingClock()
+    real_signature = gates.exact_signature
+
+    def slow_signature(*args, **kwargs):
+        clock.advance_ms(1000)
+        return real_signature(*args, **kwargs)
+
+    monkeypatch.setattr(gates, "exact_signature", slow_signature)
+    outcome = _compare_with_control(bundle, _deadline_control(clock))
+    assert outcome.status is ComparisonStatus.INCONCLUSIVE
+    assert outcome.reasons == ("COMPARISON_DEADLINE",)

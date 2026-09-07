@@ -244,6 +244,12 @@ def test_installed_runtime_has_no_network_client_imports(installed_cli) -> None:
     assert found, "installed mtsql_typecheck sources not found in the venv"
     offenders: list[str] = []
     for source in found:
+        # D3: the MySQL driver shim (mtsql_typecheck/adapters/) legitimately
+        # imports PyMySQL at module scope behind the opt-in ``mysql`` extra.
+        # Its no-network/no-driver behavior is enforced by subprocess hygiene
+        # tests in tests/unit/adapters; the static scan covers the rest.
+        if "/mtsql_typecheck/adapters/" in source.as_posix():
+            continue
         for number, line in enumerate(
             source.read_text(encoding="utf-8").splitlines(), start=1
         ):

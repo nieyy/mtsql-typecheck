@@ -37,6 +37,20 @@ primary reason.  Gate 6.4.1 stops at the first failing gate: the first
 untrustworthy structure is never dereferenced further and the comparison
 returns non-comparable immediately.  This module performs no I/O, never
 normalizes values, and never imports an executor, sink or driver.
+
+D3 online-handover fixes (design 6.2/6.4.6): the comparison is bounded by its
+own ``budget.deadline_ms`` even when a caller control is supplied
+(mid-computation deadlines yield INCONCLUSIVE COMPARISON_DEADLINE, never a
+partial candidate); gate 1 additionally re-derives the expectation binding's
+run/attempt/environment/name-map consistency against the dispatched request;
+the structured preflight-rejection branch sits BEHIND gate 2 (statically
+invalid input stays INCONCLUSIVE, never NOT_APPLICABLE) and a rejection only
+separates NOT_APPLICABLE when ``evaluate_observed_environment`` proves the
+rejected requirement was actually violated against the recorded snapshot —
+``environment.same-instance`` is never provable from one snapshot and stays
+INCONCLUSIVE/INPUT_INVALID; and gate 4 treats present-but-mismatched session
+identity (against the side context's ``select_connection_id``) as a
+BINDING_MISMATCH session mislink, not plain incompleteness.
 """
 
 from __future__ import annotations
@@ -65,6 +79,7 @@ from mtsql_typecheck.contracts.execution import (
     ResultValueKind,
     Side,
     TerminationState,
+    default_control,
     load_attempt_expectation,
     load_attempt_request,
     load_execution_evidence,
@@ -81,6 +96,7 @@ from mtsql_typecheck.generation.render import RenderPhase, render_pair
 from mtsql_typecheck.generation.validation import (
     RuntimeFactsError,
     environment_content_hash,
+    evaluate_observed_environment,
     name_map_content_hash,
     validate_case,
     validate_runtime_facts,
@@ -131,6 +147,27 @@ _RECONCILABLE_REQUIREMENT_IDS = frozenset(
         "environment.optimizer_switch",
     }
 )
+
+# Preflight-rejection proof map (D3 online-handover fix): the frozen
+# requirement id -> the runtime condition id whose VIOLATED status in
+# ``evaluate_observed_environment`` proves the rejection from the rejection's
+# own observed snapshot.  ``environment.same-instance`` is deliberately
+# absent: a single session snapshot cannot prove a same-instance rejection
+# (documented exception; D3's server-uuid instance-identity check is the
+# designated proof for that requirement), so such a rejection can never
+# become NOT_APPLICABLE here.
+_REJECTION_PROOF_CONDITIONS: dict[str, str] = {
+    "environment.mysql80": "version_series",
+    "environment.version_series": "version_series",
+    "environment.innodb": "engine",
+    "environment.sql_mode": "session_snapshot",
+    "environment.character_set": "session_snapshot",
+    "environment.collation": "session_snapshot",
+    "environment.time_zone": "session_snapshot",
+    "environment.vendor_build": "vendor_build",
+    "environment.session_snapshot": "session_snapshot",
+    "environment.optimizer_switch": "optimizer_switch",
+}
 
 
 # --------------------------------------------------------------------------
@@ -316,9 +353,22 @@ def compare_case(
     """
     collector = _ReasonCollector()
     identity_holder: list[_Identity] = []
+    # The comparison is bounded by its own deadline budget in addition to the
+    # caller's control (design: mid-computation deadlines must produce an
+    # INCONCLUSIVE COMPARISON_DEADLINE verdict, never a partial candidate).
+    if control is None:
+        effective_control = default_control(budget.deadline_ms / 1000)
+    else:
+        effective_control = control.child(budget.deadline_ms / 1000)
     try:
         return _compare_case_inner(
-            request, expectation, evidence, budget, control, collector, identity_holder
+            request,
+            expectation,
+            evidence,
+            budget,
+            effective_control,
+            collector,
+            identity_holder,
         )
     except ControlCancelled:
         if identity_holder:
@@ -381,29 +431,44 @@ def _compare_case_inner(
             return identity.non_comparable(
                 ComparisonStatus.INCONCLUSIVE, collector.finalize()
             )
+        # D3 online-handover fix: the expectation must be bound to this run,
+        # this attempt, the request's target environment (recomputed, never
+        # compared as a self-reported string) and its own name map.
+        if expectation.binding.run_id != request.run_id:
+            collector.add(1, "*", "expectation_binding_run_id", ComparisonReason.BINDING_MISMATCH)
+            identity = _Identity(case_id, request_hash, expectation_hash, evidence.evidence_hash)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
+        if expectation.binding.attempt_id != request.attempt_id:
+            collector.add(
+                1, "*", "expectation_binding_attempt_id", ComparisonReason.BINDING_MISMATCH
+            )
+            identity = _Identity(case_id, request_hash, expectation_hash, evidence.evidence_hash)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
+        if expectation.binding.environment_hash != environment_content_hash(
+            request.target_environment
+        ):
+            collector.add(
+                1, "*", "expectation_binding_environment", ComparisonReason.BINDING_MISMATCH
+            )
+            identity = _Identity(case_id, request_hash, expectation_hash, evidence.evidence_hash)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
+        if expectation.binding.name_map_hash != name_map_content_hash(expectation.name_map):
+            collector.add(
+                1, "*", "expectation_binding_name_map", ComparisonReason.BINDING_MISMATCH
+            )
+            identity = _Identity(case_id, request_hash, expectation_hash, evidence.evidence_hash)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
     identity = _Identity(case_id, request_hash, expectation_hash, evidence.evidence_hash)
     identity_holder.append(identity)
     _checkpoint(control)
-
-    # ------------------------------------------------------------------
-    # Structured preflight rejection: NOT_APPLICABLE requires a rejection
-    # bound to this request and reconcilable with the case requirements.
-    # ------------------------------------------------------------------
-    if evidence.preflight_rejection is not None:
-        rejection = evidence.preflight_rejection
-        if rejection.request_hash != request_hash:
-            collector.add(1, "*", "preflight_request_hash", ComparisonReason.INPUT_INVALID)
-            return identity.non_comparable(
-                ComparisonStatus.INCONCLUSIVE, collector.finalize()
-            )
-        if rejection.rejected_requirement_id not in _RECONCILABLE_REQUIREMENT_IDS:
-            collector.add(1, "*", "preflight_requirement_id", ComparisonReason.INPUT_INVALID)
-            return identity.non_comparable(
-                ComparisonStatus.INCONCLUSIVE, collector.finalize()
-            )
-        return identity.non_comparable(
-            ComparisonStatus.NOT_APPLICABLE, (ComparisonReason.UNSUPPORTED_ENVIRONMENT,)
-        )
 
     # ------------------------------------------------------------------
     # Gate 2: D1 static re-validation must be VALID_STATIC.
@@ -432,6 +497,56 @@ def _compare_case_inner(
             ComparisonStatus.INCONCLUSIVE, collector.finalize()
         )
     _checkpoint(control)
+
+    # ------------------------------------------------------------------
+    # Structured preflight rejection (after gate 2, D3 online-handover fix:
+    # a static-invalid payload must never become NOT_APPLICABLE).
+    # NOT_APPLICABLE additionally requires a rejection *proof*: the
+    # rejection's own observed snapshot must violate the mapped requirement
+    # condition, so a rejection whose snapshot satisfies the requirement is
+    # INCONCLUSIVE/INPUT_INVALID, never a comparable verdict.
+    # ------------------------------------------------------------------
+    if evidence.preflight_rejection is not None:
+        rejection = evidence.preflight_rejection
+        if rejection.request_hash != request_hash:
+            collector.add(2, "*", "preflight_request_hash", ComparisonReason.INPUT_INVALID)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
+        if rejection.rejected_requirement_id not in _RECONCILABLE_REQUIREMENT_IDS:
+            collector.add(2, "*", "preflight_requirement_id", ComparisonReason.INPUT_INVALID)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
+        mapped = _REJECTION_PROOF_CONDITIONS.get(rejection.rejected_requirement_id)
+        if mapped is None:
+            # "environment.same-instance": one session snapshot cannot prove
+            # this requirement (documented exception; D3's server-uuid check
+            # is the designated proof).
+            collector.add(2, "*", "preflight_not_evaluable", ComparisonReason.INPUT_INVALID)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
+        try:
+            conditions = evaluate_observed_environment(payload, rejection.observed_environment)
+        except RuntimeFactsError:
+            conditions = ()
+        condition = next((c for c in conditions if c.condition_id == mapped), None)
+        proven = condition is not None and (
+            condition.status is CheckStatus.VIOLATED
+            or (
+                mapped == "vendor_build"
+                and condition.status is CheckStatus.PENDING
+            )
+        )
+        if not proven:
+            collector.add(2, "*", "preflight_unproven", ComparisonReason.INPUT_INVALID)
+            return identity.non_comparable(
+                ComparisonStatus.INCONCLUSIVE, collector.finalize()
+            )
+        return identity.non_comparable(
+            ComparisonStatus.NOT_APPLICABLE, (ComparisonReason.UNSUPPORTED_ENVIRONMENT,)
+        )
 
     # ------------------------------------------------------------------
     # Gate 3: D1 runtime fact revalidation must be READY.
@@ -593,6 +708,16 @@ def _compare_case_inner(
             collector.add(4, side_label, "query_status", ComparisonReason.QUERY_NOT_COMPLETE)
         if query.session_start_id is None or query.session_end_id is None:
             collector.add(4, side_label, "query_session", ComparisonReason.QUERY_NOT_COMPLETE)
+        elif (
+            context is not None
+            and (
+                query.session_start_id != context.select_connection_id
+                or query.session_end_id != context.select_connection_id
+            )
+        ):
+            # D3 online-handover fix: the SELECT must start and end on the
+            # same session that the side context identifies.
+            collector.add(4, side_label, "query_session_identity", ComparisonReason.BINDING_MISMATCH)
 
     if not collector.empty:
         return identity.non_comparable(
@@ -640,10 +765,13 @@ def _compare_case_inner(
     _checkpoint(control)
 
     # ------------------------------------------------------------------
-    # Gate 6: exact multiset comparison (deadline checked).
+    # Gate 6: exact multiset comparison (deadline checked; every stage
+    # re-checks the deadline so a mid-computation expiry produces an honest
+    # INCONCLUSIVE COMPARISON_DEADLINE, never a partial candidate).
     # ------------------------------------------------------------------
     a_rows = results["A"].rows
     b_rows = results["B"].rows
+    _checkpoint(control)
     try:
         counts, witness, truncated = compare_multisets(a_rows, b_rows, budget.witness_limit)
     except ContractError:
@@ -653,7 +781,9 @@ def _compare_case_inner(
         return identity.non_comparable(
             ComparisonStatus.INCONCLUSIVE, collector.finalize()
         )
+    _checkpoint(control)  # before building the signature key counts
     if counts.a_rows == counts.b_rows == counts.matched_rows and not witness:
+        _checkpoint(control)  # immediately before the final MATCH verdict
         return Comparison(
             case_id=identity.case_id,
             request_hash=identity.request_hash,
@@ -669,12 +799,11 @@ def _compare_case_inner(
             exact_signature=None,
             fingerprint=None,
         )
-    signature = exact_signature(
-        payload,
-        ORACLE_VERSION,
-        _signature_key_counts(a_rows),
-        _signature_key_counts(b_rows),
-    )
+    a_key_counts = _signature_key_counts(a_rows)
+    b_key_counts = _signature_key_counts(b_rows)
+    _checkpoint(control)  # before exact_signature
+    signature = exact_signature(payload, ORACLE_VERSION, a_key_counts, b_key_counts)
+    _checkpoint(control)  # before fingerprint
     group_fingerprint = fingerprint(
         payload,
         ORACLE_VERSION,
@@ -683,6 +812,7 @@ def _compare_case_inner(
         target_env_hash,
         profile,
     )
+    _checkpoint(control)  # immediately before the final MISMATCH_CANDIDATE verdict
     return Comparison(
         case_id=identity.case_id,
         request_hash=identity.request_hash,

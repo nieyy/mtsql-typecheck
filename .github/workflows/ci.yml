@@ -1,0 +1,82 @@
+# Minimal CI for mtsql-typecheck (D3 design section 7, Phase 6:
+# "CI offline/mysql 分组及 wheel 安装检查"; 整体验收 table).
+#
+# Two test groups, per the design:
+# - offline: the default suite, run WITHOUT the mysql extra installed.
+#   Command: python -m pytest --strict-markers -m 'not mysql and not integration'
+#   (pyproject.toml declares both the `mysql` and `integration` markers as
+#   "deselected by default CI"; today no test carries either marker, so this
+#   runs the full offline suite.)
+# - mysql-online: the `mysql` marker group, gated on a live target.  Per the
+#   design, "mysql 组被明确选中却没有 target 时须报环境配置失败，不能整组
+#   skip 后返回绿灯": without TYPECHECK_TARGET_CONFIG this job FAILS, it does
+#   not skip.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline:
+    name: offline suite (no mysql extra)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (offline core + test deps only)
+        run: python -m pip install -e '.[test]'
+      - name: Offline regression
+        run: python -m pytest --strict-markers -m 'not mysql and not integration'
+
+  wheel-install:
+    name: wheel build + installed CLI (offline, no driver)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps -w dist-wheel/
+      - name: Install wheel into a fresh venv
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --no-index --no-deps dist-wheel/*.whl
+      - name: Installed CLI smoke (offline commands + online --help)
+        run: |
+          /tmp/wheel-venv/bin/mt-typecheck --help
+          for c in generate validate preflight run replay reduce cleanup; do
+            /tmp/wheel-venv/bin/mt-typecheck "$c" --help > /dev/null
+          done
+
+  mysql-online:
+    name: mysql marker group (live target required)
+    runs-on: ubuntu-latest
+    env:
+      TYPECHECK_MYSQL_PASSWORD: ${{ secrets.TYPECHECK_MYSQL_PASSWORD }}
+      TYPECHECK_TARGET_CONFIG: ${{ vars.TYPECHECK_TARGET_CONFIG }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install with the certified driver
+        run: python -m pip install -e '.[test,mysql]'
+      - name: Require a live target configuration
+        run: |
+          if [ -z "$TYPECHECK_TARGET_CONFIG" ]; then
+            echo "::error::the mysql marker group was selected but no live target is configured."
+            echo "::error::Set the TYPECHECK_TARGET_CONFIG variable to the path of a target.json"
+            echo "::error::for a dedicated, authorized MySQL/MTSQL 8.0 instance. Failing instead of"
+            echo "::error::skipping, so an unconfigured online group can never report green."
+            exit 1
+          fi
+      - name: Online mysql group
+        run: python -m pytest --strict-markers -m mysql

@@ -23,6 +23,13 @@ the default), so every budget in this module is an integer millisecond value
 and no wall-clock read happens here.  All database side effects stay behind
 the injected ``ExecutionPort``; this module performs no I/O of its own and
 never imports a driver.
+
+D3 online handover: a run without a sink is a zero-dispatch NO_SINK stop
+unless the caller passes ``unpersisted=True`` (in-memory, non-certifiable);
+each attempt reserves its max-receipt envelope before REQUESTED; full
+canonical documents are published as dependency payloads (evidence profile
+``typecheck-full-evidence-v1``); and the per-run name-map ledger guards the
+fresh-objects handover.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from typing import Optional
 from mtsql_typecheck.contracts.case import ContractError
 from mtsql_typecheck.contracts.codec import canonical_json
 from mtsql_typecheck.contracts.execution import (
+    AttemptExpectation,
     AttemptFailure,
     AttemptRequest,
     AttemptStage,
@@ -45,8 +53,13 @@ from mtsql_typecheck.contracts.execution import (
     QueryStatus,
     TerminalReceipt,
     TerminationState,
+    dump_attempt_expectation,
+    dump_attempt_request,
+    dump_execution_evidence,
 )
 from mtsql_typecheck.contracts.oracle import (
+    EVIDENCE_RESERVE_BYTES,
+    MAX_EVIDENCE_BYTES,
     ORACLE_VERSION,
     REPLAY_ATTEMPTS,
     CandidateInput,
@@ -60,12 +73,16 @@ from mtsql_typecheck.contracts.oracle import (
     StopReason,
     TraceRecord,
     TraceSink,
+    dump_comparison,
 )
+from mtsql_typecheck.generation.validation import name_map_content_hash
 from mtsql_typecheck.oracle.exact import row_key
 from mtsql_typecheck.oracle.fingerprint import exact_signature
 from mtsql_typecheck.oracle.gates import ResultContractViolation, compare_case
 
-__all__ = ["replay_candidate"]
+from .trace import TraceBudgetError
+
+__all__ = ["replay_candidate", "attempt_reserve_hint"]
 
 # Sentinel reference for "no original comparison exists" (None candidate);
 # ReplayResult.comparison_hash is a frozen hex64 field.
@@ -78,6 +95,28 @@ _DISPATCH_ORDERS = (ExecutionOrder.AB, ExecutionOrder.BA, ExecutionOrder.AB)
 # Keeps "-replay-<n>" inside the 128-char AttemptRequest.attempt_id limit.
 _ATTEMPT_ID_RUN_MAX = 100
 
+# Slack for the remaining attempt records (EXPECTATION/EVIDENCE/RESULT/
+# COMPARISON lines plus their published documents) on top of the worst-case
+# evidence envelope (design 6.4.6 max-receipt reservation).
+_ATTEMPT_RECORD_SLACK_BYTES = 1024 * 1024
+
+
+def attempt_reserve_hint(request_doc_bytes: int) -> int:
+    """Max-receipt pre-dispatch reserve for one attempt (design 6.4.6).
+
+    Covers the attempt's REQUESTED document, the largest evidence envelope
+    the executor may return (``MAX_EVIDENCE_BYTES``), one slack MiB for the
+    remaining attempt records and the sink's termination reserve floor.
+    Shared with the reduction engine so both writers reserve before they
+    dispatch.
+    """
+    return (
+        request_doc_bytes
+        + MAX_EVIDENCE_BYTES
+        + _ATTEMPT_RECORD_SLACK_BYTES
+        + EVIDENCE_RESERVE_BYTES
+    )
+
 
 def replay_candidate(
     candidate: CandidateInput | None,
@@ -85,15 +124,28 @@ def replay_candidate(
     trace_sink: TraceSink | None,
     policy: ReplayPolicy,
     control: Control,
+    *,
+    require_fresh_name_maps: bool = False,
+    unpersisted: bool = False,
 ) -> ReplayResult:
-    """Replay one mismatch candidate with three fresh attempts (contract 7)."""
+    """Replay one mismatch candidate with three fresh attempts (contract 7).
+
+    ``require_fresh_name_maps=True`` additionally treats a repeated name-map
+    content hash across the seeded original candidate and the replay attempts
+    as an execution protocol violation (design 6.2 G01: cross-round object
+    reuse) instead of a record-only ledger entry.  ``unpersisted=True``
+    preserves the pre-D3 in-memory behaviour of running without a sink; such
+    runs carry no trace and are never certifiable evidence.
+    """
     synthetic = candidate.evidence.synthetic if candidate is not None else False
     comparison_hash = (
         candidate.comparison_hash if candidate is not None else _NO_COMPARISON_HASH
     )
 
     # Zero-dispatch exits: no executor, cooperative cancellation before any
-    # dispatch, and a candidate that does not re-compare to a mismatch.
+    # dispatch, a candidate that does not re-compare to a mismatch, and —
+    # since D3 — a missing sink without the explicit unpersisted opt-out
+    # (a run with nowhere to persist its evidence is never dispatched).
     if executor is None:
         return _result(
             comparison_hash,
@@ -137,6 +189,21 @@ def replay_candidate(
             ReplayOutcome.NOT_REPLAYED,
             StopReason.INVALID_CANDIDATE,
             False,
+            synthetic,
+        )
+    if trace_sink is None and not unpersisted:
+        return _result(
+            comparison_hash,
+            policy,
+            (),
+            0,
+            0,
+            0,
+            0,
+            (),
+            ReplayOutcome.NOT_REPLAYED,
+            StopReason.NO_SINK,
+            True,
             synthetic,
         )
 
@@ -215,6 +282,13 @@ def replay_candidate(
     tracer = _Tracer(trace_sink)
     counters = _Counters()
 
+    # Per-run name-map content-hash ledger (design 6.2 G01): the original
+    # candidate's name map seeds it, so an executor reusing the candidate's
+    # objects for a "fresh" attempt is detected even on the first dispatch.
+    name_map_ledger: set[str] = set()
+    if candidate.expectation is not None:
+        name_map_ledger.add(name_map_content_hash(candidate.expectation.name_map))
+
     for index in range(REPLAY_ATTEMPTS):
         # Pre-dispatch gates: cancellation is never retried past, and a
         # group whose total budget is spent never starts another attempt.
@@ -231,13 +305,26 @@ def replay_candidate(
         attempt_control = group.child(attempt_ms / 1000)
         request = _attempt_request(candidate, index, attempt_ms, synthetic)
 
-        if not tracer.emit(
+        # Max-receipt reservation BEFORE the REQUESTED record and before any
+        # dispatch (design 6.4.6): an attempt that cannot reserve its full
+        # evidence envelope up front is never started, so a budget refusal
+        # leaves zero execution for it.
+        try:
+            tracer.reserve(attempt_reserve_hint(len(dump_attempt_request(request))))
+        except TraceBudgetError:
+            stop = StopReason.EVIDENCE_BUDGET
+            break
+        except Exception:
+            stop, counters.operational = StopReason.EVIDENCE_WRITE_FAILED, True
+            break
+        if not tracer.emit_full(
             "REQUESTED",
             {
                 "attempt_id": request.attempt_id,
                 "execution_order": str(request.execution_order.value),
                 "request_hash": request.request_hash,
             },
+            dump_attempt_request(request),
         ):
             # Never dispatch an attempt that cannot be traced first
             # (design 6.4.5: no "run first, save later").
@@ -256,6 +343,8 @@ def replay_candidate(
             counters,
             baseline_signature,
             baseline_fingerprint,
+            name_map_ledger,
+            require_fresh_name_maps,
         )
         if operational:
             counters.operational = True
@@ -336,6 +425,8 @@ def _run_attempt(
     counters: _Counters,
     baseline_signature: str,
     baseline_fingerprint: str,
+    name_map_ledger: set[str],
+    require_fresh_name_maps: bool,
 ) -> tuple[Optional[StopReason], bool]:
     """Dispatch prepare/execute for one attempt and evaluate the early-exit
     contract.  Returns (stop_reason, operational); None means the attempt
@@ -351,12 +442,29 @@ def _run_attempt(
         if not isinstance(exc, Exception):
             raise  # KeyboardInterrupt is never swallowed
         return StopReason.EXECUTOR_EXCEPTION, True
-    if not tracer.emit(
+
+    # Fresh-objects handover (design 6.2 G01): the executor allocates its own
+    # NameMap per attempt; a content hash already in the run ledger means a
+    # cross-round object reuse.  Record-only unless require_fresh_name_maps.
+    name_map_hash = name_map_content_hash(expectation.name_map)
+    if require_fresh_name_maps and name_map_hash in name_map_ledger:
+        terminal = _safe_cancel(executor, request.attempt_id, policy.cancel_grace_ms)
+        evidence = _failure_evidence(
+            request, expectation, AttemptStage.SETUP, None, terminal,
+            code="EXECUTION_PROTOCOL_ERROR",
+        )
+        counters.attempt_hashes.append(evidence.evidence_hash)
+        _emit_failure_branch(tracer, request, evidence)
+        return StopReason.EXECUTION_PROTOCOL_ERROR, True
+    name_map_ledger.add(name_map_hash)
+
+    if not tracer.emit_full(
         "EXPECTATION",
         {
             "attempt_id": request.attempt_id,
             "expectation_hash": expectation.expectation_hash,
         },
+        dump_attempt_expectation(expectation),
     ):
         # Prepare ran; the attempt stays requested and is cancelled safely.
         terminal = _safe_cancel(executor, request.attempt_id, policy.cancel_grace_ms)
@@ -388,11 +496,28 @@ def _run_attempt(
         # (design 6.5: mismatched executor responses stop dispatching).
         _emit_failure_branch(tracer, request, evidence)
         return StopReason.EXECUTION_PROTOCOL_ERROR, True
+    if (
+        evidence.expectation is not None
+        and evidence.expectation.expectation_hash != expectation.expectation_hash
+    ):
+        # Replaced binding/facts (design 6.2 G01): the executor returned
+        # evidence bound to a different expectation than the one it prepared;
+        # it is refused, never compared, and the attempt is cancelled first.
+        _safe_cancel(executor, request.attempt_id, policy.cancel_grace_ms)
+        _emit_failure_branch(tracer, request, evidence)
+        return StopReason.EXECUTION_PROTOCOL_ERROR, True
     if _both_sides_complete(evidence):
         counters.completed += 1
-    if not tracer.emit("EVIDENCE", _evidence_inline(request.attempt_id, evidence)):
+    if not tracer.emit_full(
+        "EVIDENCE",
+        _evidence_inline(request.attempt_id, evidence),
+        dump_execution_evidence(evidence),
+    ):
+        # The attempt ran; cancel it before reporting the write failure.
+        _safe_cancel(executor, request.attempt_id, policy.cancel_grace_ms)
         return StopReason.EVIDENCE_WRITE_FAILED, True
     if not tracer.emit("RESULT", _result_inline(request.attempt_id, evidence)):
+        _safe_cancel(executor, request.attempt_id, policy.cancel_grace_ms)
         return StopReason.EVIDENCE_WRITE_FAILED, True
 
     # Unconfirmed termination blocks the comparison (design 6.4.1); D2
@@ -404,10 +529,17 @@ def _run_attempt(
             return StopReason.EXECUTION_INCOMPLETE, False
         return StopReason.TERMINATION_UNCONFIRMED, True
 
-    comparison, comparison_stop = _compare_attempt(request, evidence, group)
+    comparison, comparison_stop = _compare_attempt(
+        request, expectation, evidence, group
+    )
     if comparison is None:
         return comparison_stop, comparison_stop is StopReason.EXECUTION_PROTOCOL_ERROR
-    if not tracer.emit("COMPARISON", _comparison_inline(request.attempt_id, comparison)):
+    if not tracer.emit_full(
+        "COMPARISON",
+        _comparison_inline(request.attempt_id, comparison),
+        dump_comparison(comparison),
+    ):
+        _safe_cancel(executor, request.attempt_id, policy.cancel_grace_ms)
         return StopReason.EVIDENCE_WRITE_FAILED, True
 
     if comparison.comparable:
@@ -492,12 +624,17 @@ def _recompare(
 
 
 def _compare_attempt(
-    request: AttemptRequest, evidence: ExecutionEvidence, control: Control
+    request: AttemptRequest,
+    expectation: AttemptExpectation,
+    evidence: ExecutionEvidence,
+    control: Control,
 ) -> tuple[Optional[Comparison], Optional[StopReason]]:
+    """Compare against the prepare-RETURNED expectation (design 6.2 G01),
+    never the expectation the evidence may be carrying itself."""
     try:
         return (
             compare_case(
-                request, evidence.expectation, evidence, ComparisonBudget(), control
+                request, expectation, evidence, ComparisonBudget(), control
             ),
             None,
         )
@@ -597,20 +734,44 @@ def _failure_evidence(
 
 class _Tracer:
     """Emits hash-chained TraceRecords through the injected sink and follows
-    the PersistedReceipt chain so a shared sink stays consistent."""
+    the PersistedReceipt chain so a shared sink stays consistent.
+
+    Full-evidence profile (design 6.3): every REQUESTED/EXPECTATION/EVIDENCE/
+    COMPARISON record publishes its complete canonical document through the
+    sink's ``publish_payload`` first and references it via ``payload_ref``
+    (``emit_full``); the engine's replay view implements that publication so
+    the chain keeps a single owner.  ``emit`` writes inline-only records.
+    """
 
     def __init__(self, sink: TraceSink | None) -> None:
         self._sink = sink
         self._seq = 0
         self._prev_hash = "0" * 64
 
+    def reserve(self, size_hint: int) -> None:
+        """Pre-flight budget check; TraceBudgetError propagates to the caller
+        so it can distinguish a budget refusal from a write failure."""
+        if self._sink is None:
+            return
+        self._sink.reserve(size_hint)
+
     def emit(self, kind: str, inline: dict) -> bool:
         """Persist one record; False on sink failure (caller stops dispatch)."""
+        return self.emit_full(kind, inline, None)
+
+    def emit_full(self, kind: str, inline: dict, doc: Optional[bytes]) -> bool:
+        """Persist one record, publishing ``doc`` as a dependency payload and
+        referencing it; False on sink failure (caller stops dispatch)."""
         if self._sink is None:
             return True
         try:
+            payload_ref = None if doc is None else self._sink.publish_payload(doc)
             record = TraceRecord(
-                seq=self._seq + 1, kind=kind, inline=inline, prev_hash=self._prev_hash
+                seq=self._seq + 1,
+                kind=kind,
+                payload_ref=payload_ref,
+                inline=inline,
+                prev_hash=self._prev_hash,
             )
             self._sink.reserve(len(canonical_json(record.to_obj())))
             receipt = self._sink.append(record)
@@ -626,7 +787,10 @@ def _emit_failure_branch(
 ) -> None:
     """EVIDENCE/RESULT failure branch without EXPECTATION/COMPARISON
     (design 6.4.6); failures are best-effort, the stop decision stands."""
-    tracer.emit("EVIDENCE", _evidence_inline(request.attempt_id, evidence))
+    tracer.emit_full(
+        "EVIDENCE", _evidence_inline(request.attempt_id, evidence),
+        dump_execution_evidence(evidence),
+    )
     tracer.emit("RESULT", _result_inline(request.attempt_id, evidence))
 
 

@@ -7,7 +7,7 @@
     "actual_execution_order": null,
     "b_context": null,
     "b_query": null,
-    "evidence_hash": "3d05c3f82e06481e44842787b9e013bd7c7a1abdeb176f5f4524e1aed72f88e0",
+    "evidence_hash": "1d01ae43f968ba20162c3466e3a835977c5b9e5eaee51e642c94957d43ea3d62",
     "expectation": null,
     "failure": null,
     "isolation_receipt": null,
@@ -25,11 +25,11 @@
           "ONLY_FULL_GROUP_BY",
           "STRICT_ALL_TABLES"
         ],
-        "time_zone": "+00:00",
+        "time_zone": "+08:00",
         "vendor": "mysql",
         "version": "8.0.39"
       },
-      "rejected_requirement_id": "environment.same-instance",
+      "rejected_requirement_id": "environment.time_zone",
       "request_hash": "bddacf5bc2b7c9c484183940304dcc7f3ec1562a44760537385d4970c98058fc"
     },
     "request_hash": "bddacf5bc2b7c9c484183940304dcc7f3ec1562a44760537385d4970c98058fc",

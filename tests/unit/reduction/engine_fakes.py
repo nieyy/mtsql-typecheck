@@ -229,19 +229,23 @@ class RecordingTraceSink:
     ``publish_payload`` records payload bytes under their sha256 (the same
     layout the real sink uses) so ACCEPTED/SNAPSHOT artifacts can be
     asserted; ``fail_on`` kinds raise ``RuntimeError`` before any state
-    change, modelling a persistence fault.
+    change, modelling a persistence fault; ``fail_publish`` makes every
+    dependency publication raise instead.
     """
 
-    def __init__(self, fail_on=()) -> None:
+    def __init__(self, fail_on=(), fail_publish: bool = False) -> None:
         self.records: list[TraceRecord] = []
         self.reserved: list[int] = []
         self.payloads: dict[str, bytes] = {}
         self.fail_on = frozenset(fail_on)
+        self.fail_publish = fail_publish
 
     def reserve(self, size_hint: int) -> None:
         self.reserved.append(size_hint)
 
     def publish_payload(self, data: bytes) -> ArtifactRef:
+        if self.fail_publish:
+            raise RuntimeError("simulated payload publication failure")
         payload = bytes(data)
         digest = sha256_hex(payload)
         self.payloads[digest] = payload
@@ -273,6 +277,7 @@ def run_reduction(
     *,
     policy: Optional[ReductionPolicy] = None,
     control=None,
+    require_fresh_name_maps: bool = False,
 ) -> ReductionResult:
     return reduce_candidate(
         bundle.candidate,
@@ -280,6 +285,10 @@ def run_reduction(
         sink,
         policy if policy is not None else ReductionPolicy(),
         control if control is not None else make_control(StubClock()),
+        require_fresh_name_maps=require_fresh_name_maps,
+        # In-memory test runs without a sink keep the pre-D3 unpersisted
+        # behaviour; sink-less NO_SINK semantics are tested explicitly.
+        unpersisted=(sink is None),
     )
 
 

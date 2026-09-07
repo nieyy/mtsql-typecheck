@@ -68,12 +68,14 @@ from mtsql_typecheck.contracts.execution import (
     TransactionIsolation,
 )
 from mtsql_typecheck.contracts.oracle import (
+    ArtifactRef,
     CandidateInput,
     ComparisonBudget,
     ComparisonStatus,
     PersistedReceipt,
     ReplayPolicy,
     ReplayResult,
+    TRACE_SCHEMA_VERSION,
     TraceRecord,
 )
 from mtsql_typecheck.generation.render import RenderPhase, render_pair
@@ -338,8 +340,10 @@ def evidence_for(
             parameters=(),
             status=QueryStatus.COMPLETE,
             result=result_set,
-            session_start_id=f"{request.attempt_id}-sess-{label.lower()}",
-            session_end_id=f"{request.attempt_id}-sess-{label.lower()}",
+            # The SELECT runs on the side context's select connection (the
+            # same session identity the oracle's session-chain gate requires).
+            session_start_id=f"{request.attempt_id}-conn-{label.lower()}",
+            session_end_id=f"{request.attempt_id}-conn-{label.lower()}",
             actual_database=database,
             environment_before=_ENV,
             environment_after=_ENV,
@@ -574,15 +578,32 @@ class ScriptedExecutor:
 
 class SpyTraceSink:
     """In-memory TraceSink spy: record kinds, ordering and the hash chain,
-    with an optional per-kind write failure."""
+    with an optional per-kind write failure.  ``publish_payload`` records
+    payload bytes under their sha256 (the same layout the real sink uses);
+    ``fail_publish`` makes every dependency publication raise instead."""
 
-    def __init__(self, fail_on=()) -> None:
+    def __init__(self, fail_on=(), fail_publish: bool = False) -> None:
         self.records: list[TraceRecord] = []
         self.reserved: list[int] = []
+        self.payloads: dict[str, bytes] = {}
         self.fail_on = frozenset(fail_on)
+        self.fail_publish = fail_publish
 
     def reserve(self, size_hint: int) -> None:
         self.reserved.append(size_hint)
+
+    def publish_payload(self, data: bytes) -> ArtifactRef:
+        if self.fail_publish:
+            raise RuntimeError("simulated payload publication failure")
+        payload = bytes(data)
+        digest = sha256_hex(payload)
+        self.payloads[digest] = payload
+        return ArtifactRef(
+            path=f"files/{digest}.json",
+            size_bytes=len(payload),
+            sha256=digest,
+            schema_version=TRACE_SCHEMA_VERSION,
+        )
 
     def append(self, record: TraceRecord) -> PersistedReceipt:
         if record.kind in self.fail_on:
@@ -595,13 +616,25 @@ class SpyTraceSink:
         return [record.kind for record in self.records]
 
 
-def run_replay(bundle: CandidateBundle, executor, sink=None, *, policy=None, control=None):
+def run_replay(
+    bundle: CandidateBundle,
+    executor,
+    sink=None,
+    *,
+    policy=None,
+    control=None,
+    require_fresh_name_maps: bool = False,
+):
     return replay_candidate(
         bundle.candidate,
         executor,
         sink,
         policy if policy is not None else ReplayPolicy(),
         control if control is not None else make_control(StubClock()),
+        require_fresh_name_maps=require_fresh_name_maps,
+        # In-memory test runs without a sink keep the pre-D3 unpersisted
+        # behaviour; sink-less NO_SINK semantics are tested explicitly.
+        unpersisted=(sink is None),
     )
 
 

@@ -138,8 +138,8 @@
       "result_terminal": "CONFIRMED",
       "select_sql_hash": "dea3ca533b58652fc561bddf21ee5358fb6549d41dd902284c17662a16639952",
       "select_text": "SELECT `v` AS `c0` FROM `t_a`;",
-      "session_end_id": "sess-a-1",
-      "session_start_id": "sess-a-1",
+      "session_end_id": "conn-a-1",
+      "session_start_id": "conn-a-1",
       "side": "A",
       "status": "COMPLETE"
     },
@@ -280,12 +280,12 @@
       "result_terminal": "CONFIRMED",
       "select_sql_hash": "40e433ac9a5534ddcd73284a72004f72ad9a8230ba1bd7db68a5d4c163d7685e",
       "select_text": "SELECT `v` AS `c0` FROM `t_b`;",
-      "session_end_id": "sess-b-1",
-      "session_start_id": "sess-b-1",
+      "session_end_id": "conn-b-1",
+      "session_start_id": "conn-b-1",
       "side": "B",
       "status": "COMPLETE"
     },
-    "evidence_hash": "3fa7295dd52f574c544c3879cea8cb42e396b1c8abffa278434eaecae50b4178",
+    "evidence_hash": "116295b572748ebe04fc2c9b9eb5101b1a12271399f5da6eac443917559df85c",
     "expectation": {
       "binding": {
         "attempt_id": "attempt-d2-fixture-1",

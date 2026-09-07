@@ -43,7 +43,12 @@ def test_no_executor_returns_not_replayed_with_zero_dispatch():
 
 def test_none_candidate_is_invalid_with_sentinel_comparison_hash():
     result = f.replay_candidate(
-        None, f.ScriptedExecutor(f.CandidateBundle()), None, _POLICY, f.make_control(f.StubClock())
+        None,
+        f.ScriptedExecutor(f.CandidateBundle()),
+        None,
+        _POLICY,
+        f.make_control(f.StubClock()),
+        unpersisted=True,
     )
     assert result.outcome is ReplayOutcome.NOT_REPLAYED
     assert result.stop_reason is StopReason.INVALID_CANDIDATE
@@ -82,7 +87,9 @@ def test_candidate_that_recompares_to_match_is_not_replayed():
         source="test",
     )
     executor = f.ScriptedExecutor(f.CandidateBundle())
-    result = f.replay_candidate(candidate, executor, None, _POLICY, f.make_control(f.StubClock()))
+    result = f.replay_candidate(
+        candidate, executor, None, _POLICY, f.make_control(f.StubClock()), unpersisted=True
+    )
     assert result.outcome is ReplayOutcome.NOT_REPLAYED
     assert result.stop_reason is StopReason.INVALID_CANDIDATE
     assert result.requested == 0
@@ -239,7 +246,14 @@ def test_synthetic_flag_propagates_from_candidate():
         comparison_hash=comparison.hash,
         source="test",
     )
-    result = f.replay_candidate(candidate, f.ScriptedExecutor(f.CandidateBundle()), None, _POLICY, f.make_control(f.StubClock()))
+    result = f.replay_candidate(
+        candidate,
+        f.ScriptedExecutor(f.CandidateBundle()),
+        None,
+        _POLICY,
+        f.make_control(f.StubClock()),
+        unpersisted=True,
+    )
     assert result.synthetic is False
 
 
@@ -257,9 +271,24 @@ def test_trace_group_ordering_and_hash_chain():
         assert record.prev_hash == previous
         assert _hex64(record.hash)
         previous = record.hash
-    # Every append was preceded by an exact reserve call.
-    assert len(sink.reserved) == len(sink.records)
+    # Every append was preceded by an exact reserve call, and each attempt
+    # additionally made one pre-dispatch max-receipt reserve before its
+    # REQUESTED record (design 6.4.6): 3 pre-dispatch + 18 record reserves.
+    assert len(sink.reserved) == len(sink.records) + 3
     assert all(size > 0 for size in sink.reserved)
+    pre_dispatch = [sink.reserved[i] for i in (0, 7, 14)]
+    from mtsql_typecheck.contracts.execution import dump_attempt_request
+    from mtsql_typecheck.contracts.oracle import MAX_EVIDENCE_BYTES
+    from mtsql_typecheck.reduction.replay import attempt_reserve_hint
+    requests = [
+        dump_attempt_request(
+            replay_module._attempt_request(bundle.candidate, index, _POLICY.attempt_budget_ms, True)
+        )
+        for index in range(3)
+    ]
+    assert pre_dispatch == [attempt_reserve_hint(len(doc)) for doc in requests]
+    # The max-receipt reserve covers the worst-case evidence envelope.
+    assert all(size >= MAX_EVIDENCE_BYTES for size in pre_dispatch)
 
 
 def test_attempt_budget_is_clamped_to_remaining_total_budget():

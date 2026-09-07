@@ -1,0 +1,17 @@
+{
+  "description": "SYNTHETIC hand-built CLIENT_DEPRECATE_EOF result terminator (OK packet), warning_count=7, SERVER_MORE_RESULTS_EXISTS set",
+  "frames": [
+    {
+      "payload_length": 7,
+      "sequence": 1
+    }
+  ],
+  "payload_hex": "0000000a000700",
+  "expected": {
+    "affected_rows": 0,
+    "insert_id": 0,
+    "server_status": 10,
+    "warning_count": 7,
+    "has_next": true
+  }
+}

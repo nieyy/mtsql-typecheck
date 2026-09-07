@@ -1,0 +1,19 @@
+{
+  "description": "SYNTHETIC hand-built 2-fragment reassembled message under the 16 MiB cap (small-frame continuation exercised via the reader continuation_threshold seam)",
+  "frames": [
+    {
+      "payload_length": 12,
+      "sequence": 0
+    },
+    {
+      "payload_length": 10,
+      "sequence": 1
+    }
+  ],
+  "payload_hex": "426f756e646564466978747572654d65737361676521",
+  "expected": {
+    "message_bytes": 22,
+    "reassembled_hex": "426f756e646564466978747572654d65737361676521"
+  },
+  "continuation_threshold": 12
+}

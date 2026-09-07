@@ -527,6 +527,7 @@ class PersistedReceipt:
 
 class TraceSink(Protocol):
     def reserve(self, size_hint: int) -> None: ...       # pre-flight budget check
+    def publish_payload(self, data: bytes) -> ArtifactRef: ...  # atomic dependency file
     def append(self, record: "TraceRecord") -> PersistedReceipt: ...
 
 @dataclass(frozen=True)
@@ -802,3 +803,182 @@ never patch history or auto-resume SQL.
 - `synthetic=True` marks test-fixture evidence and propagates to every
   Comparison/ReplayResult/ReductionResult; it never counts as real
   reproduction.
+
+## 12. D3 online-handover fixes (A01–A06)
+
+Phase-1 fixes applied jointly by D2/D3 before the online handover.  All of
+them are contract-level: the frozen models, the gate walk, and the writer
+protocol change together, and every check below has an independent test.
+
+### 12.1 Comparison binds to the prepare-returned expectation (A01)
+
+`replay_candidate`, `reduce_candidate` and the child-attempt driver compare
+against the expectation **returned by `executor.prepare`** for that attempt —
+never against `evidence.expectation`.  After execute, if the returned
+evidence carries an expectation whose `expectation_hash` differs from the
+prepared one (replaced binding/facts), the writer **cancels the attempt
+first**, records the failure branch (EVIDENCE/RESULT without
+EXPECTATION/COMPARISON), and stops with `EXECUTION_PROTOCOL_ERROR`.  The
+evidence is refused, never compared.
+
+### 12.2 Fresh-name-map ledger and `require_fresh_name_maps` (A01/G01)
+
+Each run keeps a ledger of name-map content hashes
+(`name_map_content_hash`), **seeded with the original candidate's
+`expectation.name_map` hash**.  After every successful prepare the executor's
+name-map hash is checked and then added:
+
+- duplicate hash with `require_fresh_name_maps=True` (keyword-only on
+  `replay_candidate` and `reduce_candidate`): safe-cancel the attempt, emit
+  the failure branch, stop with `EXECUTION_PROTOCOL_ERROR` (cross-round
+  object reuse, design 6.2 G01);
+- duplicate hash with the default `require_fresh_name_maps=False`: recorded
+  in the ledger only; the run proceeds.
+
+### 12.3 Gate 1 expectation-binding consistency checks (A01)
+
+When an expectation is present, gate 1 additionally requires
+`binding.run_id == request.run_id`,
+`binding.attempt_id == request.attempt_id`,
+`binding.environment_hash == environment_content_hash(request.target_environment)`
+and `binding.name_map_hash == name_map_content_hash(expectation.name_map)`.
+Each mismatch is INCONCLUSIVE/BINDING_MISMATCH (condition ids
+`expectation_binding_run_id`, `expectation_binding_attempt_id`,
+`expectation_binding_environment`, `expectation_binding_name_map`).
+
+### 12.4 Preflight ordering and rejection proof (A02/G02)
+
+The structured preflight-rejection branch moved **behind gate 2**: a request
+that is already statically invalid stays INCONCLUSIVE (e.g.
+VERSION_UNSUPPORTED), never NOT_APPLICABLE.  A rejection separates
+NOT_APPLICABLE/UNSUPPORTED_ENVIRONMENT only when it is proven by the recorded
+snapshot: the pure helper `evaluate_observed_environment(payload, observed)`
+(generation/validation.py) re-evaluates the frozen environment conditions and
+the rejected requirement id must map to a condition that is VIOLATED
+(`environment.vendor_build` also accepts the PENDING empty-fields state):
+
+- `environment.mysql80`/`version_series` -> `version_series`;
+- `environment.innodb` -> `engine`;
+- `environment.sql_mode`/`character_set`/`collation`/`time_zone` ->
+  `session_snapshot`;
+- `environment.vendor_build` -> `vendor_build`;
+- `environment.session_snapshot` -> `session_snapshot`;
+- `environment.optimizer_switch` -> `optimizer_switch`;
+- `environment.same-instance` is **not evaluable from one snapshot** and is
+  the designated exception (the D3 server-uuid check owns it): a rejection
+  claiming it is INCONCLUSIVE/INPUT_INVALID.
+
+An unproven rejection (request-hash mismatch, unknown requirement id, or a
+snapshot that satisfies the requirement) is INCONCLUSIVE/INPUT_INVALID, never
+NOT_APPLICABLE.  The reconcilable requirement-id set is frozen
+(`_RECONCILABLE_REQUIREMENT_IDS`).
+
+### 12.5 Session-chain gate (A02)
+
+Gate 4: when both session ids are present, the SELECT must have run on the
+side context's select connection:
+`query.session_start_id == query.session_end_id ==
+context.select_connection_id`.  A present-but-mismatched identity is a
+BINDING_MISMATCH with condition id `query_session_identity` (a session
+mislink), while absent ids remain QUERY_NOT_COMPLETE.  The D2 golden fixtures
+were re-frozen accordingly (see
+`tests/contract/fixtures/d2/README.md`).
+
+### 12.6 Full-evidence trace profile (A03/G03)
+
+`contracts.oracle.EVIDENCE_PROFILE_FULL = "typecheck-full-evidence-v1"`.
+Writers on the full profile put `"evidence_profile": EVIDENCE_PROFILE_FULL`
+into the START inline and publish a complete canonical dependency document
+for each of these records (payload_ref on the record):
+
+| Record | Published document |
+|---|---|
+| REQUESTED | `dump_attempt_request` |
+| EXPECTATION | `dump_attempt_expectation` |
+| EVIDENCE | `dump_execution_evidence` |
+| COMPARISON | `dump_comparison` |
+
+RESULT/REPLAY/ACCEPTED/FINISHED stay inline-only (ACCEPTED/SNAPSHOT keep
+their payload_ref semantics).  `reduction/audit.py::audit_trace(root, budget,
+control=None)` re-reads a trace root: only a structurally COMPLETE trace with
+the full-evidence marker receives the semantic pass — per attempt it reloads
+the four documents through the strict loaders, verifies the recorded
+request/expectation/evidence/comparison hash bindings, re-runs
+`compare_case`, and requires the recomputed comparison hash to equal the
+recorded one.  Any contradiction is SEMANTIC_MISMATCH and trust stops at
+that group; an attempt whose failure branch legitimately lacks a document is
+NOT_AUDITED (honest, unverifiable); traces without the marker are legacy D2
+traces and are NOT_AUDITED by construction.  `reduction/trace.py` stays free
+of oracle semantics.
+
+### 12.7 Max-receipt reservation and comparison deadline (A04/G04)
+
+`compare_case` bounds the comparison by `budget.deadline_ms` even when a
+caller control is supplied (effective control =
+`control.child(budget.deadline_ms/1000)`, or
+`default_control(budget.deadline_ms/1000)` when control is None), with
+checkpoints before the signature key counts, before `compare_multisets`,
+before `exact_signature`, before the fingerprint and immediately before the
+final verdict; a deadline reached mid-comparison yields INCONCLUSIVE
+COMPARISON_DEADLINE (with a recorded identity when available), never a
+partial candidate.
+
+Each attempt reserves its worst-case envelope through the sink BEFORE the
+REQUESTED record is emitted and before any dispatch:
+
+```
+attempt_reserve_hint(request_doc_bytes)
+    = len(dump_attempt_request(request)) + MAX_EVIDENCE_BYTES
+      + 1 MiB (remaining attempt records) + EVIDENCE_RESERVE_BYTES
+```
+
+A `TraceBudgetError` from the reservation is an `EVIDENCE_BUDGET` stop with
+**zero execution** for that attempt (no `requested` increment, no prepare);
+any other reservation failure is an operational `EVIDENCE_WRITE_FAILED`.
+
+### 12.8 NO_SINK semantics and the `unpersisted` opt-out (A05/R02)
+
+`StopReason.NO_SINK` exists.  `replay_candidate`/`reduce_candidate` accept a
+keyword-only `unpersisted: bool = False`; with `trace_sink is None` and
+`unpersisted=False` the run stops before any dispatch
+(NOT_REPLAYED/NO_SINK operational for replay, FAILED/NO_SINK for reduction).
+`unpersisted=True` preserves the pre-D3 in-memory behaviour; such runs carry
+no trace and are never certifiable evidence.
+
+Publication of the original SNAPSHOT is load-bearing: a failure there stops
+the run (FAILED/EVIDENCE_WRITE_FAILED) with zero dispatch.  Any sink failure
+for the EVIDENCE/RESULT/COMPARISON records after an attempt executed first
+attempts a bounded cancel (`_safe_cancel`) before the stop reason is
+returned.
+
+### 12.9 TraceSink protocol (A06)
+
+`TraceSink` gained `publish_payload(data: bytes) -> ArtifactRef` (atomic
+dependency publication); `PersistedReceipt`/`ArtifactRef` are unchanged.
+The protocol is exactly `reserve` + `publish_payload` + `append` — replay is
+driven end-to-end by a sink implementing only these three methods.  In an
+engine run, replay's records are re-based through the engine's
+`_ReplayView`, whose `publish_payload` delegates to the run chain so a single
+owner publishes every payload.  The two comparison calling conventions remain:
+`compare_case` raises `ResultContractViolation` (carrying the INCONCLUSIVE
+comparison with reason RESULT_CONTRACT_VIOLATION); `compare_case_document`
+returns that carried comparison instead of raising.
+
+### 12.10 Implementation status / design backfill note
+
+Backfill for the D2 design's request that the A01-A06 fixes be recorded with
+commit hashes and test evidence (D3 design section 3.1: "D2 文档应回填修复
+commit 和新增测试证据"):
+
+- All fixes in this section (12.1-12.9) are implemented in the working tree on
+  branch `nieyy/d3`. Commit hashes are pending commit authorization and will be
+  appended when the branch is committed; no hash is claimed here.
+- Test evidence: `tests/unit/reduction/test_online_handover.py` (20 tests,
+  G01/G02/G04/R02 and A04/A05/A06 negatives), `tests/unit/reduction/test_audit.py`
+  (4 tests, G03 semantic audit), and the re-frozen D3 golden fixtures under
+  `tests/contract/fixtures/d2/` (see that directory's README for the
+  expectation/session-chain re-freeze). Gate-level negatives for the
+  expectation-binding, session-chain, and preflight-rejection rules live in
+  `tests/unit/oracle/test_gates.py`.
+- The runner-side D3 record of what remains live-certified vs offline-covered
+  is `docs/runner-d3-verification.md`.

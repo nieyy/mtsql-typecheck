@@ -1,0 +1,17 @@
+{
+  "description": "SYNTHETIC hand-built OK packet, warning_count=5, status=AUTOCOMMIT",
+  "frames": [
+    {
+      "payload_length": 7,
+      "sequence": 1
+    }
+  ],
+  "payload_hex": "00000002000500",
+  "expected": {
+    "affected_rows": 0,
+    "insert_id": 0,
+    "server_status": 2,
+    "warning_count": 5,
+    "has_next": false
+  }
+}

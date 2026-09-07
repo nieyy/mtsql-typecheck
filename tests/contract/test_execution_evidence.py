@@ -104,7 +104,10 @@ D2 = FIXTURES / "d2"
 # Frozen once with plain json.dumps + hashlib over the canonical content of
 # evidence_success_match.json, cross-checked with the external `shasum -a 256`
 # tool; no assertion recomputes its own expectation with the code under test.
-GOLDEN_EVIDENCE_HASH = "3fa7295dd52f574c544c3879cea8cb42e396b1c8abffa278434eaecae50b4178"
+# Re-frozen for the D3 online-handover fix (A02): the fixture's query session
+# ids were unified with their SideContext select_connection_id, so the
+# evidence content (and only the evidence content) changed.
+GOLDEN_EVIDENCE_HASH = "116295b572748ebe04fc2c9b9eb5101b1a12271399f5da6eac443917559df85c"
 GOLDEN_REQUEST_HASH = "bddacf5bc2b7c9c484183940304dcc7f3ec1562a44760537385d4970c98058fc"
 
 

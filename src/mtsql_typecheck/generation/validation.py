@@ -575,6 +575,7 @@ __all__.extend([
     "name_map_content_hash",
     "parse_mysql_version_series",
     "validate_runtime_facts",
+    "evaluate_observed_environment",
 ])
 
 # Runtime validator semantic identity: re-validation always produces a new
@@ -612,6 +613,23 @@ def name_map_content_hash(name_map: NameMap) -> str:
     if not isinstance(name_map, NameMap):
         raise RuntimeFactsError("name_map_content_hash needs a NameMap")
     return sha256_hex(canonical_json(name_map.to_obj()))
+
+
+def evaluate_observed_environment(
+    payload: CasePayload, observed: ObservedEnvironment | None
+) -> tuple[ConditionResult, ...]:
+    """Re-evaluate the frozen environment conditions against one snapshot.
+
+    Pure helper shared by the D2 oracle's preflight-rejection proof (design:
+    a structured preflight rejection is NOT_APPLICABLE only when the observed
+    snapshot itself proves the rejected requirement is violated).  Uses
+    exactly the same condition logic as ``validate_runtime_facts``; the
+    payload argument exists so a caller cannot evaluate conditions for
+    something that is not a case payload.
+    """
+    if not isinstance(payload, CasePayload):
+        raise RuntimeFactsError("evaluate_observed_environment needs a CasePayload")
+    return tuple(_observed_environment_conditions(observed))
 
 
 # MySQL version-series parsing: the leading dotted-numeric prefix of the
@@ -800,7 +818,13 @@ _ENVIRONMENT_CONDITION_IDS = (
 
 
 def _environment_conditions(facts: RuntimeFacts) -> list[ConditionResult]:
-    environment = facts.observed_environment
+    return _observed_environment_conditions(facts.observed_environment)
+
+
+def _observed_environment_conditions(
+    environment: ObservedEnvironment | None,
+) -> list[ConditionResult]:
+    """Environment conditions evaluated against one observed snapshot."""
     if environment is None:
         return [
             _rt_pending(

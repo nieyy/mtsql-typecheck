@@ -15,6 +15,7 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+mysql = ["PyMySQL==1.1.2"]
 
 [project.scripts]
 mt-typecheck = "mtsql_typecheck.cli.main:main"
@@ -25,3 +26,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "mysql: requires a live MySQL/MTSQL 8.0 target and the certified driver (deselected by default CI)",
+    "integration: end-to-end tests against disposable authorized targets (deselected by default CI)",
+]

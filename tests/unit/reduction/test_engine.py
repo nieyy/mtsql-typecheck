@@ -157,7 +157,12 @@ def test_none_candidate_fails_without_dispatch():
     bundle = CandidateBundle()
     executor = ReductionExecutor(bundle)
     result = reduce_candidate(
-        None, executor, None, ReductionPolicy(), make_control(StubClock())
+        None,
+        executor,
+        None,
+        ReductionPolicy(),
+        make_control(StubClock()),
+        unpersisted=True,
     )
     assert result.outcome is ReductionOutcome.FAILED
     assert result.stop_reason is StopReason.INVALID_CANDIDATE
@@ -215,7 +220,12 @@ def test_invalid_candidate_recompare_fails_before_any_dispatch():
         source="test",
     )
     result = reduce_candidate(
-        candidate, executor, None, ReductionPolicy(), make_control(StubClock())
+        candidate,
+        executor,
+        None,
+        ReductionPolicy(),
+        make_control(StubClock()),
+        unpersisted=True,
     )
     assert result.outcome is ReductionOutcome.FAILED
     assert result.stop_reason is StopReason.INVALID_CANDIDATE
@@ -272,7 +282,12 @@ def test_single_row_candidate_unchanged_after_matches():
     for index in range(3, 9):
         executor.script[index] = _MATCH
     result = reduce_candidate(
-        candidate, executor, None, ReductionPolicy(), make_control(StubClock())
+        candidate,
+        executor,
+        None,
+        ReductionPolicy(),
+        make_control(StubClock()),
+        unpersisted=True,
     )
     assert result.outcome is ReductionOutcome.UNCHANGED
     assert result.stop_reason is StopReason.SEARCH_EXHAUSTED

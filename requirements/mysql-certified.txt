@@ -1,0 +1,11 @@
+# Certified MySQL driver baseline (D3 design section 5 [R4]/[R8]).
+#
+# PyMySQL==1.1.2 is the certified driver baseline: the narrow text-protocol
+# shim (src/mtsql_typecheck/adapters/mysql_protocol.py) is version-gated on
+# exactly this release via importlib.metadata and fails closed on any other
+# version or on missing internal packet/metadata structures.
+#
+# Upgrades require re-running the protocol fixtures
+# (tests/contract/fixtures/mysql112/, tests/unit/adapters/) and full
+# re-certification; automatic drift to another patch release is not accepted.
+PyMySQL==1.1.2

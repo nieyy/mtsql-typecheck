@@ -1,0 +1,15 @@
+{
+  "description": "SYNTHETIC hand-built classic final result EOF, warning_count=7 (authoritative)",
+  "frames": [
+    {
+      "payload_length": 5,
+      "sequence": 1
+    }
+  ],
+  "payload_hex": "fe07000200",
+  "expected": {
+    "warning_count": 7,
+    "server_status": 2,
+    "has_next": false
+  }
+}

@@ -123,6 +123,7 @@ from ..contracts.case import ContractError
 from ..contracts.codec import parse_strict_json, sha256_hex
 from ..contracts.oracle import (
     EVIDENCE_APPEND_HARD_CAP,
+    EVIDENCE_PROFILE_FULL,
     EVIDENCE_RESERVE_BYTES,
     REPLAY_ATTEMPTS,
     TRACE_SCHEMA_VERSION,
@@ -709,9 +710,19 @@ def _check_start_inline(record: TraceRecord, snapshot_ref: Optional[ArtifactRef]
     if not isinstance(inline, dict):
         raise ContractError("START inline payload must be a JSON object")
     expected_keys = {"complexity", "payload_ref", "case_id"}
-    if set(inline.keys()) != expected_keys:
+    # D3: a writer on the full-evidence profile additionally marks the START
+    # record; the marker value is frozen in contracts.oracle.
+    optional_keys = {"evidence_profile"}
+    if not expected_keys <= set(inline.keys()) <= expected_keys | optional_keys:
         raise ContractError(
-            f"START inline payload must have exactly the keys {sorted(expected_keys)}"
+            f"START inline payload must have the keys {sorted(expected_keys)} "
+            f"plus optionally {sorted(optional_keys)}"
+        )
+    if "evidence_profile" in inline and inline["evidence_profile"] != (
+        EVIDENCE_PROFILE_FULL
+    ):
+        raise ContractError(
+            f"START inline evidence_profile must be {EVIDENCE_PROFILE_FULL!r}"
         )
     if not _is_hex64(inline["case_id"]):
         raise ContractError("START inline case_id must be 64-char lowercase hex")

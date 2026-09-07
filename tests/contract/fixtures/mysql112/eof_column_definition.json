@@ -1,0 +1,15 @@
+{
+  "description": "SYNTHETIC hand-built classic column-definition EOF, warning_count=3 (must not be taken as the final count)",
+  "frames": [
+    {
+      "payload_length": 5,
+      "sequence": 1
+    }
+  ],
+  "payload_hex": "fe03000200",
+  "expected": {
+    "warning_count": 3,
+    "server_status": 2,
+    "has_next": false
+  }
+}

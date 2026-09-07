@@ -68,3 +68,26 @@ contract models so every hash is internally consistent; the golden hashes
 asserted by `tests/contract/test_execution_evidence.py` were recomputed
 independently (plain `json.dumps` + `hashlib`/`shasum -a 256`) and are frozen
 as literals in the test.
+
+## D3 online-handover regeneration notes (2026-09)
+
+Two fixture groups were regenerated for the D3 online-handover fixes; the
+re-seal procedure is unchanged (frozen contract models, evidence_hash
+re-derived over the canonical content) and every expectation in
+`tests/contract/` and `tests/unit/oracle/` is still hand-written:
+
+- `evidence_success_match`, `evidence_success_candidate`,
+  `evidence_b_not_started`, `evidence_cleanup_failed`,
+  `evidence_termination_unknown`: the per-side `QueryEvidence` session ids
+  were unified with the paired `SideContext.select_connection_id`
+  (`sess-*-1` -> `conn-*-1`).  The D3 session-identity gate now requires
+  `session_start_id == session_end_id == select_connection_id`, so an
+  internally consistent fixture must run its SELECT on the side context's
+  select connection.  This re-froze the golden evidence hash asserted by
+  `tests/contract/test_execution_evidence.py`.
+- `evidence_preflight_rejection`: the rejected requirement was changed from
+  `environment.same-instance` to `environment.time_zone` (observed
+  `+08:00` vs required `+00:00`).  `environment.same-instance` is not
+  evaluable from a single observed snapshot (the D3 server-uuid check owns
+  it), so a rejection claiming it can no longer separate NOT_APPLICABLE;
+  a single-snapshot proof needs a condition the snapshot can violate.

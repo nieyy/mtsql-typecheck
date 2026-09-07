@@ -1,0 +1,15 @@
+{
+  "description": "SYNTHETIC hand-built ERR packet, errno=1049, sqlstate=42S02",
+  "frames": [
+    {
+      "payload_length": 38,
+      "sequence": 2
+    }
+  ],
+  "payload_hex": "ff1904233432533032556e6b6e6f776e206461746162617365202774635f6d697373696e6727",
+  "expected": {
+    "errno": 1049,
+    "sqlstate": "42S02",
+    "message": "Unknown database 'tc_missing'"
+  }
+}

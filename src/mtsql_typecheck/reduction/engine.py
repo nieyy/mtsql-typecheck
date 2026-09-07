@@ -30,6 +30,13 @@ Safety boundaries implemented here:
 Time comes exclusively from the injected ``Control`` clock (monotonic
 seconds); every budget in this module is an integer millisecond value and no
 wall-clock read happens here.  ``KeyboardInterrupt`` is never swallowed.
+
+D3 online handover: a run without a sink is a zero-dispatch NO_SINK failure
+unless the caller passes ``unpersisted=True`` (in-memory, non-certifiable);
+the SNAPSHOT publication failure aborts the run before dispatch; each child
+attempt reserves its max-receipt envelope before REQUESTED and publishes its
+full canonical documents (evidence profile ``typecheck-full-evidence-v1``);
+and the per-run name-map ledger guards the fresh-objects handover.
 """
 
 from __future__ import annotations
@@ -56,8 +63,12 @@ from ..contracts.execution import (
     QueryStatus,
     TerminalReceipt,
     TerminationState,
+    dump_attempt_expectation,
+    dump_attempt_request,
+    dump_execution_evidence,
 )
 from ..contracts.oracle import (
+    EVIDENCE_PROFILE_FULL,
     REPLAY_ATTEMPTS,
     ArtifactRef,
     CandidateInput,
@@ -73,11 +84,12 @@ from ..contracts.oracle import (
     StopReason,
     TraceRecord,
     TraceSink,
+    dump_comparison,
 )
 from ..generation.transforms import apply_transform
-from ..generation.validation import validate_case
+from ..generation.validation import name_map_content_hash, validate_case
 from ..oracle.gates import ResultContractViolation, compare_case
-from .replay import replay_candidate
+from .replay import attempt_reserve_hint, replay_candidate
 from .strategy import complexity, iter_proposals
 from .trace import TraceBudgetError
 
@@ -92,10 +104,6 @@ _DISPATCH_ORDERS = (ExecutionOrder.AB, ExecutionOrder.BA, ExecutionOrder.AB)
 
 # Keeps "-reduce-<n>" inside the 128-char AttemptRequest.attempt_id limit.
 _ATTEMPT_ID_RUN_MAX = 100
-
-# Pre-dispatch reserve: must cover a full attempt's records (REQUESTED,
-# EXPECTATION, EVIDENCE, RESULT, COMPARISON) plus the group's REPLAY close.
-_ATTEMPT_RESERVE_HINT = 4096
 
 
 # --------------------------------------------------------------------------
@@ -224,6 +232,11 @@ class _ReplayView:
     def reserve(self, size_hint: int) -> None:
         self._chain.sink.reserve(size_hint)
 
+    def publish_payload(self, data: bytes) -> ArtifactRef:
+        """Dependency payload publication stays owned by the engine chain
+        (design 6.3: one publisher per run)."""
+        return self._chain.publish(data)
+
     def append(self, record: TraceRecord) -> PersistedReceipt:
         chain = self._chain
         rebased = TraceRecord(
@@ -250,14 +263,18 @@ def _emit_engine_frame(
     chain: _Chain, state: _RunState
 ) -> Optional[tuple[ReductionOutcome, StopReason]]:
     """Emit SNAPSHOT (+ original payload artifact) and START; returns a
-    terminal (outcome, stop) pair when the run cannot be traced, else None."""
-    payload_ref: Optional[ArtifactRef] = None
+    terminal (outcome, stop) pair when the run cannot be traced, else None.
+
+    The SNAPSHOT's payload publication is load-bearing: a run whose original
+    snapshot cannot be persisted is never dispatched (design 6.4.6), so a
+    publication failure here is a whole-run fault, not a degraded frame."""
+    payload_ref: Optional[ArtifactRef]
     try:
         payload_ref = chain.publish(canonical_json(state.best_payload.to_obj()))
     except TraceBudgetError:
         return (ReductionOutcome.BUDGET_EXHAUSTED, StopReason.EVIDENCE_BUDGET)
     except Exception:
-        payload_ref = None  # START.payload_ref is null when publication failed
+        return (ReductionOutcome.FAILED, StopReason.EVIDENCE_WRITE_FAILED)
     try:
         chain.emit(
             "SNAPSHOT",
@@ -268,8 +285,9 @@ def _emit_engine_frame(
             "START",
             inline={
                 "complexity": list(complexity(state.best_payload)),
-                "payload_ref": None if payload_ref is None else payload_ref.to_obj(),
+                "payload_ref": payload_ref.to_obj(),
                 "case_id": state.original_case_id,
+                "evidence_profile": EVIDENCE_PROFILE_FULL,
             },
         )
     except TraceBudgetError:
@@ -286,14 +304,16 @@ def _emit_engine_frame(
 
 
 def _compare_evidence(
-    request: AttemptRequest, evidence: ExecutionEvidence, control: Control
+    request: AttemptRequest,
+    expectation,
+    evidence: ExecutionEvidence,
+    control: Control,
 ) -> tuple[Optional[Comparison], Optional[StopReason]]:
-    """Gate walk over one attempt's evidence; mirrors replay's mapping."""
+    """Gate walk over one attempt's evidence against the prepare-RETURNED
+    expectation (design 6.2 G01); mirrors replay's mapping."""
     try:
         return (
-            compare_case(
-                request, evidence.expectation, evidence, ComparisonBudget(), control
-            ),
+            compare_case(request, expectation, evidence, ComparisonBudget(), control),
             None,
         )
     except ResultContractViolation as exc:
@@ -329,6 +349,7 @@ def _failure_evidence(
     stage: AttemptStage,
     exc: Optional[BaseException],
     terminal: Optional[TerminalReceipt],
+    code: Optional[str] = None,
 ) -> ExecutionEvidence:
     """Salvage executor-carried evidence or record an honest failure envelope
     bound to the dispatched request (no fabricated success facts)."""
@@ -336,9 +357,11 @@ def _failure_evidence(
     if isinstance(salvaged, ExecutionEvidence) and salvaged.request_hash == request.request_hash:
         return salvaged
     failure = getattr(exc, "failure", None)
-    failure_code = (
-        failure.code if isinstance(failure, AttemptFailure) else "EXECUTOR_EXCEPTION"
-    )
+    failure_code = code
+    if failure_code is None:
+        failure_code = (
+            failure.code if isinstance(failure, AttemptFailure) else "EXECUTOR_EXCEPTION"
+        )
     receipt = terminal
     if receipt is None:
         receipt = TerminalReceipt(
@@ -489,10 +512,18 @@ def _emit_attempt_records(
     if chain is None:
         return
     try:
-        chain.emit("EVIDENCE", _evidence_inline(request.attempt_id, evidence))
+        evidence_ref = chain.publish(dump_execution_evidence(evidence))
+        chain.emit(
+            "EVIDENCE", _evidence_inline(request.attempt_id, evidence),
+            payload_ref=evidence_ref,
+        )
         chain.emit("RESULT", _result_inline(request.attempt_id, evidence))
         if comparison is not None:
-            chain.emit("COMPARISON", _comparison_inline(request.attempt_id, comparison))
+            comparison_ref = chain.publish(dump_comparison(comparison))
+            chain.emit(
+                "COMPARISON", _comparison_inline(request.attempt_id, comparison),
+                payload_ref=comparison_ref,
+            )
     except Exception:
         return
 
@@ -533,6 +564,8 @@ def _run_child_attempt(
     index: int,
     group: _GroupState,
     original_fingerprint: str,
+    name_map_ledger: set[str],
+    require_fresh_name_maps: bool,
 ) -> Optional[_GroupOutcome]:
     """Dispatch one child attempt and classify it (design 6.4.5).
 
@@ -548,7 +581,18 @@ def _run_child_attempt(
     request = _child_request(state, parent_request, child_payload, index, attempt_ms)
 
     if chain is not None:
+        # Max-receipt reservation BEFORE the REQUESTED record and before any
+        # dispatch (design 6.4.6): a budget refusal here leaves zero execution
+        # for the attempt.
+        request_doc = dump_attempt_request(request)
         try:
+            chain.sink.reserve(attempt_reserve_hint(len(request_doc)))
+        except TraceBudgetError:
+            return _GroupOutcome("budget", StopReason.EVIDENCE_BUDGET)
+        except Exception:
+            return _GroupOutcome("fault", StopReason.EVIDENCE_WRITE_FAILED)
+        try:
+            request_ref = chain.publish(request_doc)
             chain.emit(
                 "REQUESTED",
                 inline={
@@ -556,7 +600,7 @@ def _run_child_attempt(
                     "execution_order": str(request.execution_order.value),
                     "request_hash": request.request_hash,
                 },
-                reserve_hint=_ATTEMPT_RESERVE_HINT,
+                payload_ref=request_ref,
             )
         except TraceBudgetError:
             return _GroupOutcome("budget", StopReason.EVIDENCE_BUDGET)
@@ -571,19 +615,38 @@ def _run_child_attempt(
         terminal = _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
         evidence = _failure_evidence(request, None, AttemptStage.PREPARE, exc, terminal)
         group.attempt_hashes.append(evidence.evidence_hash)
-        comparison, _ = _compare_evidence(request, evidence, run_control)
+        comparison, _ = _compare_evidence(request, None, evidence, run_control)
         _emit_attempt_records(chain, request, evidence, comparison)
         if not isinstance(exc, Exception):
             raise  # KeyboardInterrupt is never swallowed
         return _GroupOutcome("fault", StopReason.EXECUTOR_EXCEPTION)
+
+    # Fresh-objects handover (design 6.2 G01): the executor allocates its own
+    # NameMap per attempt; a content hash already in the run ledger means a
+    # cross-round object reuse.  Record-only unless require_fresh_name_maps.
+    name_map_hash = name_map_content_hash(expectation.name_map)
+    if require_fresh_name_maps and name_map_hash in name_map_ledger:
+        terminal = _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
+        evidence = _failure_evidence(
+            request, expectation, AttemptStage.SETUP, None, terminal,
+            code="EXECUTION_PROTOCOL_ERROR",
+        )
+        group.attempt_hashes.append(evidence.evidence_hash)
+        comparison, _ = _compare_evidence(request, expectation, evidence, run_control)
+        _emit_attempt_records(chain, request, evidence, comparison)
+        return _GroupOutcome("fault", StopReason.EXECUTION_PROTOCOL_ERROR)
+    name_map_ledger.add(name_map_hash)
+
     if chain is not None:
         try:
+            expectation_ref = chain.publish(dump_attempt_expectation(expectation))
             chain.emit(
                 "EXPECTATION",
                 inline={
                     "attempt_id": request.attempt_id,
                     "expectation_hash": expectation.expectation_hash,
                 },
+                payload_ref=expectation_ref,
             )
         except TraceBudgetError:
             _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
@@ -598,7 +661,7 @@ def _run_child_attempt(
         terminal = _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
         salvaged = _failure_evidence(request, expectation, AttemptStage.QUERY, exc, terminal)
         group.attempt_hashes.append(salvaged.evidence_hash)
-        comparison, _ = _compare_evidence(request, salvaged, run_control)
+        comparison, _ = _compare_evidence(request, expectation, salvaged, run_control)
         _emit_attempt_records(chain, request, salvaged, comparison)
         if not isinstance(exc, Exception):
             raise
@@ -609,7 +672,19 @@ def _run_child_attempt(
         # Evidence bound to another request is refused, never treated as
         # verdict evidence (design 6.5); the gate walk still records an honest
         # INCONCLUSIVE comparison so the trace group stays closable.
-        comparison, _ = _compare_evidence(request, evidence, run_control)
+        comparison, _ = _compare_evidence(request, expectation, evidence, run_control)
+        _emit_attempt_records(chain, request, evidence, comparison)
+        return _GroupOutcome("fault", StopReason.EXECUTION_PROTOCOL_ERROR)
+    if (
+        evidence.expectation is not None
+        and evidence.expectation.expectation_hash != expectation.expectation_hash
+    ):
+        # Replaced binding/facts (design 6.2 G01): the executor returned
+        # evidence bound to a different expectation than the one it prepared;
+        # the attempt is cancelled first and the group is closed with an
+        # honest INCONCLUSIVE comparison, never treated as verdict evidence.
+        _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
+        comparison, _ = _compare_evidence(request, expectation, evidence, run_control)
         _emit_attempt_records(chain, request, evidence, comparison)
         return _GroupOutcome("fault", StopReason.EXECUTION_PROTOCOL_ERROR)
 
@@ -617,11 +692,17 @@ def _run_child_attempt(
         group.completed += 1
     if chain is not None:
         try:
-            chain.emit("EVIDENCE", _evidence_inline(request.attempt_id, evidence))
+            evidence_ref = chain.publish(dump_execution_evidence(evidence))
+            chain.emit(
+                "EVIDENCE", _evidence_inline(request.attempt_id, evidence),
+                payload_ref=evidence_ref,
+            )
             chain.emit("RESULT", _result_inline(request.attempt_id, evidence))
         except TraceBudgetError:
+            _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
             return _GroupOutcome("budget", StopReason.EVIDENCE_BUDGET)
         except Exception:
+            _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
             return _GroupOutcome("fault", StopReason.EVIDENCE_WRITE_FAILED)
 
     # Unconfirmed termination blocks the comparison (design 6.4.1); request a
@@ -642,7 +723,9 @@ def _run_child_attempt(
             return _GroupOutcome("inconclusive")
         return _GroupOutcome("fault", StopReason.TERMINATION_UNCONFIRMED)
 
-    comparison, comparison_stop = _compare_evidence(request, evidence, run_control)
+    comparison, comparison_stop = _compare_evidence(
+        request, expectation, evidence, run_control
+    )
     if comparison is None:
         if comparison_stop is StopReason.EXECUTION_PROTOCOL_ERROR:
             return _GroupOutcome("fault", StopReason.EXECUTION_PROTOCOL_ERROR)
@@ -656,12 +739,17 @@ def _run_child_attempt(
         try:
             # The ACCEPTED inline carries the COMPARISON *trace record* hashes
             # (trace.py contract); the receipt hash is authoritative.
+            comparison_ref = chain.publish(dump_comparison(comparison))
             receipt = chain.emit(
-                "COMPARISON", _comparison_inline(request.attempt_id, comparison)
+                "COMPARISON",
+                _comparison_inline(request.attempt_id, comparison),
+                payload_ref=comparison_ref,
             )
         except TraceBudgetError:
+            _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
             return _GroupOutcome("budget", StopReason.EVIDENCE_BUDGET)
         except Exception:
+            _safe_cancel(executor, request.attempt_id, state.policy.cancel_grace_ms)
             return _GroupOutcome("fault", StopReason.EVIDENCE_WRITE_FAILED)
         group.comparison_hashes.append(receipt.record_hash)
     else:
@@ -800,6 +888,8 @@ def _run_proposals(
     run_control: Control,
     parent_request: AttemptRequest,
     original_fingerprint: str,
+    name_map_ledger: set[str],
+    require_fresh_name_maps: bool,
 ) -> tuple[Optional[tuple[ReductionOutcome, StopReason]], bool]:
     """Serial proposal loop over the current best payload (design 6.4.4).
 
@@ -877,6 +967,8 @@ def _run_proposals(
                     index,
                     group,
                     original_fingerprint,
+                    name_map_ledger,
+                    require_fresh_name_maps,
                 )
                 if outcome is not None:
                     break
@@ -945,9 +1037,19 @@ def reduce_candidate(
     trace_sink: TraceSink | None,
     policy: ReductionPolicy,
     control: Control,
+    *,
+    require_fresh_name_maps: bool = False,
+    unpersisted: bool = False,
 ) -> ReductionResult:
     """Reduce one verified mismatch candidate through safe transforms
-    (oracle-d2-contract section 9)."""
+    (oracle-d2-contract section 9).
+
+    ``require_fresh_name_maps=True`` treats a repeated name-map content hash
+    across the run ledger (seeded with the original candidate's name map) as
+    an execution protocol violation (design 6.2 G01) instead of a record-only
+    ledger entry.  ``unpersisted=True`` preserves the pre-D3 in-memory
+    behaviour of running without a sink; such runs carry no trace and are
+    never certifiable evidence."""
     state = _RunState(candidate, policy)
 
     # Zero-dispatch exits before any trace frame exists.
@@ -955,6 +1057,10 @@ def reduce_candidate(
         return state.result(ReductionOutcome.FAILED, StopReason.NO_EXECUTOR, False)
     if candidate is None:
         return state.result(ReductionOutcome.FAILED, StopReason.INVALID_CANDIDATE, False)
+    if trace_sink is None and not unpersisted:
+        # A run with nowhere to persist its evidence is never dispatched
+        # (design 6.4.6: no "run first, save later").
+        return state.result(ReductionOutcome.FAILED, StopReason.NO_SINK, False)
 
     chain = None if trace_sink is None else _Chain(trace_sink)
     if chain is not None:
@@ -1013,6 +1119,13 @@ def reduce_candidate(
         return state.result(outcome, stop, False)
     state.original_fingerprint = original.fingerprint
 
+    # Per-run name-map content-hash ledger (design 6.2 G01): the original
+    # candidate's name map seeds it, so an executor reusing the candidate's
+    # objects for a "fresh" child attempt is detected.
+    name_map_ledger: set[str] = set()
+    if candidate.expectation is not None:
+        name_map_ledger.add(name_map_content_hash(candidate.expectation.name_map))
+
     # The original observation is always re-replayed fresh (contract 9): no
     # prior REPRODUCED label is ever cached or substituted.
     replay = replay_candidate(
@@ -1021,6 +1134,8 @@ def reduce_candidate(
         None if chain is None else _ReplayView(chain),
         policy.replay_policy(),
         run_control,
+        require_fresh_name_maps=require_fresh_name_maps,
+        unpersisted=unpersisted,
     )
     state.executions += replay.requested
     terminal = _classify_original_replay(replay, run_control)
@@ -1035,6 +1150,8 @@ def reduce_candidate(
         run_control,
         candidate.request,
         state.original_fingerprint,
+        name_map_ledger,
+        require_fresh_name_maps,
     )
     if proposal_terminal is not None:
         outcome, stop = _emit_finished(chain, state, proposal_terminal[0], proposal_terminal[1])

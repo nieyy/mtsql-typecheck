@@ -428,8 +428,10 @@ def build_bundle(
             parameters=(),
             status=QueryStatus.COMPLETE,
             result=result_set,
-            session_start_id=f"sess-{label.lower()}-1",
-            session_end_id=f"sess-{label.lower()}-1",
+            # The SELECT runs on the side context's select connection (the
+            # same session identity the oracle's session-chain gate requires).
+            session_start_id=f"conn-{label.lower()}-1",
+            session_end_id=f"conn-{label.lower()}-1",
             actual_database=database,
             environment_before=_ENV,
             environment_after=_ENV,

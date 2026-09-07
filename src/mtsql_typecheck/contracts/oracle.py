@@ -55,6 +55,7 @@ __all__ = [
     "EVIDENCE_APPEND_BUDGET",
     "EVIDENCE_APPEND_HARD_CAP",
     "EVIDENCE_RESERVE_BYTES",
+    "EVIDENCE_PROFILE_FULL",
     "WITNESS_LIMIT",
     "MAX_SCALAR_TEXT_CHARS",
     "MAX_RESULT_SCALE",
@@ -130,6 +131,11 @@ CANCEL_GRACE_MS = 5000
 EVIDENCE_APPEND_BUDGET = 256 * 1024 * 1024
 EVIDENCE_APPEND_HARD_CAP = 1024 * 1024 * 1024
 EVIDENCE_RESERVE_BYTES = 64 * 1024
+# START.inline marker for traces whose every REQUESTED/EXPECTATION/EVIDENCE/
+# COMPARISON record also publishes its full canonical document (D3 design:
+# evidence_profile=typecheck-full-evidence-v1).  Traces without the marker
+# are legacy D2 traces and are never semantically audited.
+EVIDENCE_PROFILE_FULL = "typecheck-full-evidence-v1"
 WITNESS_LIMIT = 20                     # display cap only
 MAX_SCALAR_TEXT_CHARS = 80             # == case.MAX_NUMERIC_TEXT_CHARS
 MAX_RESULT_SCALE = 65
@@ -280,6 +286,7 @@ class StopReason(enum.StrEnum):
     PROPOSAL_BUDGET = "PROPOSAL_BUDGET"
     EVIDENCE_BUDGET = "EVIDENCE_BUDGET"
     CANCELLED = "CANCELLED"
+    NO_SINK = "NO_SINK"
     SEARCH_EXHAUSTED = "SEARCH_EXHAUSTED"
     REPLAY_COMPLETE = "REPLAY_COMPLETE"
 
@@ -1077,6 +1084,10 @@ class TraceSink(Protocol):
 
     def reserve(self, size_hint: int) -> None:
         """Pre-flight budget check before dispatching work."""
+        ...
+
+    def publish_payload(self, data: bytes) -> ArtifactRef:
+        """Atomically publish one dependency payload and return its artifact."""
         ...
 
     def append(self, record: TraceRecord) -> PersistedReceipt:

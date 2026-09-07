@@ -1,0 +1,20 @@
+{
+  "description": "SYNTHETIC hand-built field packet: NEWDECIMAL(246), charset=63 (binary), length=6, flags=0, decimals=2, name 'v', table 't'",
+  "frames": [
+    {
+      "payload_length": 26,
+      "sequence": 2
+    }
+  ],
+  "payload_hex": "036465660001740174017601760c3f0006000000f60000020000",
+  "expected": {
+    "ordinal": 0,
+    "type_code": 246,
+    "flags": 0,
+    "decimals": 2,
+    "length": 6,
+    "charset": 63,
+    "alias": "v",
+    "table_alias": "t"
+  }
+}

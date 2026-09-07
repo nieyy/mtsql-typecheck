@@ -156,6 +156,14 @@ def _build_parser() -> _Parser:
         "validate", help="offline-validate a written case bundle"
     )
     validate.add_argument("--input", required=True, metavar="BUNDLE-DIRECTORY")
+
+    # Online subcommands (D3 Phase 5).  The import is deferred so the offline
+    # parser construction keeps working without the online modules loaded,
+    # and the online modules stay driver-free (no PyMySQL import).
+    from .online import ONLINE_COMMANDS, register_online_commands
+
+    register_online_commands(subparsers)
+    parser._online_commands = frozenset(ONLINE_COMMANDS)  # type: ignore[attr-defined]
     return parser
 
 
@@ -427,6 +435,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     cancel = _CancelState()
     try:
+        if getattr(parser, "_online_commands", None) and args.command in parser._online_commands:  # type: ignore[attr-defined]
+            # Deferred import (see _build_parser); dispatch_online maps the
+            # online error families to the shared exit codes.
+            from .online import dispatch_online
+
+            return dispatch_online(args)
         if args.command == "generate":
             previous = _install_sigint_handler(cancel)
             try:
